@@ -2264,6 +2264,20 @@ export class WalletService {
     });
   }
 
+  getTokenAllowance(opts) {
+    const bc = this._getBlockchainExplorer(opts.chain || opts.coin || Defaults.EVM_CHAIN, opts.network);
+    return new Promise((resolve, reject) => {
+      if (!bc) return reject(new Error('Could not get blockchain explorer instance'));
+      bc.getTokenAllowance(opts, (err, gasLimit) => {
+        if (err) {
+          this.logw('Error getting token allowance', err);
+          return reject(err);
+        }
+        return resolve(gasLimit);
+      });
+    });
+  }
+
   getMultisigContractInstantiationInfo(opts) {
     const bc = this._getBlockchainExplorer(opts.chain || Defaults.EVM_CHAIN, opts.network);
     return new Promise((resolve, reject) => {
@@ -2421,6 +2435,7 @@ export class WalletService {
                 async next => {
                   if (!opts.nonce) {
                     try {
+                      // get nonce and include pending txs
                       opts.nonce = await ChainService.getTransactionCount(this, wallet, opts.from);
                     } catch (error) {
                       return next(error);
@@ -2441,7 +2456,86 @@ export class WalletService {
 
                   return next();
                 },
+                async next => {
+                  if (opts.tokenAddress && opts.multiSendContractAddress) {
+                    const allowanceOpts = {
+                      ...opts,
+                      network: wallet.network,
+                      ownerAddress: opts.from,
+                      spenderAddress: opts.multiSendContractAddress
+                    };
+                    try {
+                      const allowance = await this.getTokenAllowance(allowanceOpts);
+
+                      // how to get amount?
+                      // correctly compare
+                      if (allowance < opts.amount) {
+                        // get approval gasLimit
+                        const txOpts = {
+                          id: 'TA-' + opts.txProposalId,
+                          walletId: this.walletId,
+                          creatorId: this.copayerId,
+                          coin: opts.coin,
+                          chain: opts.chain?.toLowerCase() || ChainService.getChain(opts.coin), // getChain -> backwards compatibility
+                          network: wallet.network,
+                          outputs: opts.outputs,
+                          message: opts.message,
+                          from: opts.from,
+                          changeAddress,
+                          feeLevel: opts.feeLevel,
+                          feePerKb,
+                          payProUrl: opts.payProUrl,
+                          walletM: wallet.m,
+                          walletN: wallet.n,
+                          // excludeUnconfirmedUtxos: !!opts.excludeUnconfirmedUtxos,
+                          // instantAcceptanceEscrow: opts.instantAcceptanceEscrow,
+                          addressType: wallet.addressType,
+                          customData: opts.customData,
+                          inputs: opts.inputs,
+                          version: opts.txpVersion,
+                          fee: opts.fee,
+                          // noShuffleOutputs: opts.noShuffleOutputs,
+                          gasPrice,
+                          nonce: opts.nonce,
+                          gasLimit, // Backward compatibility for BWC < v7.1.1
+                          data: opts.data, // Backward compatibility for BWC < v7.1.1
+                          tokenAddress: opts.tokenAddress,
+                          // multisigContractAddress: opts.multisigContractAddress,
+                          // multiSendContractAddress: opts.multiSendContractAddress,
+                          destinationTag: opts.destinationTag,
+                          invoiceID: opts.invoiceID,
+                          signingMethod: opts.signingMethod
+                          // isTokenSwap: opts.isTokenSwap,
+                          // enableRBF: opts.enableRBF,
+                          // replaceTxByFee: opts.replaceTxByFee
+                        };
+                        const tokenApprovalTxp = TxProposal.create(txOpts);
+                        // publish
+                        // and broadcast transaction
+                        opts.nonce = opts.nonce + 1;
+                        this.storage.storeTx(wallet.id, tokenApprovalTxp, (err, res) => {
+                          this.publishTx(opts, (err2, result) => {});
+                        });
+                      }
+                    } catch (error) {
+                      return next(error);
+                    }
+
+                    // Check if token is approved by contract address
+                    // if not create txp for approval
+                    // -- copy og txp opts
+                    // -- increase og txp nonce by 1
+                  }
+                  return next();
+                },
                 next => {
+                  // TODO ETH payout - create a next before this that:
+                  // checks for token address and multisend contract address
+                  // checks for token allowance against provided token
+                  // if no token allowance, publish an approval for token
+                  // token.approve(multisendContractAddress, 999999999999999);
+                  // if token allowance is not enough
+                  // increaseAllowance(multisendContractAddress, amountToIncrease);
                   let txOptsFee = fee;
 
                   if (!txOptsFee) {

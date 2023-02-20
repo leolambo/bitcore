@@ -429,6 +429,23 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
     } as Partial<Transaction>;
   }
 
+  async approveTokens(params) {
+    const { network, spenderAddress, amount } = params;
+    // const { web3 } = await this.getWeb3(network); pass a big number?
+    const tokenAddress = params.args && params.args.tokenAddress;
+    if (tokenAddress) {
+      try {
+        const token = await this.erc20For(network, tokenAddress);
+        return await token.methods.approve(spenderAddress, amount);
+      } catch (err) {
+        return err;
+      }
+    } else {
+      throw new Error('No token address provided');
+      // throw new Error(`Attempted to aprove an invalid token on ${network} ${chain}`);
+    }
+  }
+
   async getAccountNonce(network: string, address: string) {
     const { web3 } = await this.getWeb3(network);
     const count = await web3.eth.getTransactionCount(address);
