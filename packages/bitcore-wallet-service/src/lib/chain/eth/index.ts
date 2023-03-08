@@ -127,12 +127,31 @@ export class EthChain implements IChain {
     return 0;
   }
 
-  getTransactionCount(server, wallet, from) {
+  getNonce(server, wallet, from) {
     return new Promise((resolve, reject) => {
       server._getTransactionCount(wallet, from, (err, nonce) => {
         if (err) return reject(err);
         return resolve(nonce);
       });
+    });
+  }
+  
+  // gets the transaction count realitive to all signed txs for the given wallet in bws
+  getTransactionCount(server, wallet, from) {
+    return new Promise(async (resolve, reject) => {
+      try{
+        const nextNonce = await this.getNonce(server, wallet, from);
+        const signedTXs = await server.storage.fetchSignedTxs( wallet.id, {from, sortBy: 'nonce'}); // do we nned to pass in chain? will the same wallet on a different chain have a different walletId?
+
+        let i;
+        for (i = 0; i < signedTXs.length; i++){
+          if (nextNonce + i < signedTXs[i].nonce ) break; // fill any nonce gaps
+        }
+
+        return resolve(nextNonce + i);
+      } catch(err){
+        return reject(err);
+      }
     });
   }
 
@@ -472,6 +491,11 @@ export class EthChain implements IChain {
   isUTXOChain() {
     return false;
   }
+
+  isEVMChain() {
+    return true;
+  }
+
   isSingleAddress() {
     return true;
   }
