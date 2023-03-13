@@ -2420,7 +2420,7 @@ export class WalletService {
                 },
                 async next => {
                   // If an EVM TX nonce is not given, we will set it during TX signing
-                  if (!opts.nonce && !ChainService.isEVMChain(wallet.chain)) {
+                  if (opts.nonce != null && !ChainService.isEVMChain(wallet.chain)) {
                     try {
                       opts.nonce = await ChainService.getTransactionCount(this, wallet, opts.from);
                     } catch (error) {
@@ -2842,7 +2842,7 @@ export class WalletService {
 
         const copayer = wallet.getCopayer(this.copayerId);
 
-        if (!txp.nonce && ChainService.isEVMChain(wallet.chain)) {
+        if (txp.nonce != null && ChainService.isEVMChain(wallet.chain)) {
           try {
             txp.nonce = await ChainService.getTransactionCount(this, wallet, txp.from);
           } catch (error) {
