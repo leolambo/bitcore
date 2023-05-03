@@ -83,3 +83,13 @@ MaticRoutes.get('/api/MATIC/:network/ethmultisig/transactions/:multisigContractA
     return res.status(500).send(err);
   }
 });
+
+MaticRoutes.post('/api/MATIC/:network/decode', async (req, res) => {
+  const { values, data } = req.body;
+  try {
+    const decodedData = await MATIC.decodeData({ values, data });
+    res.json(decodedData);
+  } catch (err) {
+    res.status(500).send(err);
+  }
+});

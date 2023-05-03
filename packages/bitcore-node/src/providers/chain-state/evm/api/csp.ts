@@ -604,4 +604,20 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
       outputs: []
     };
   }
+
+  decodeData(params) {
+    let result = {}
+    let { values, data} = params;
+    const dataDecoded = EVMTransactionStorage.abiDecode(data);
+    /*
+    for (const value of values)(
+      result[value] = 
+    )
+    if (dataDecoded && dataDecoded.type === 'INVOICE' && dataDecoded.name === 'pay') {
+      result['value'] = dataDecoded.params[0].value;
+    }
+    return result;
+    */
+    return dataDecoded;
+  }
 }

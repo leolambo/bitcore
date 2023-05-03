@@ -2285,6 +2285,20 @@ export class WalletService implements IWalletService {
     });
   }
 
+  decodeData(opts) {
+    const bc = this._getBlockchainExplorer(opts.chain || opts.coin || Defaults.EVM_CHAIN, opts.network);
+    return new Promise((resolve, reject) => {
+      if (!bc) return reject(new Error('Could not get blockchain explorer instance'));
+      bc.decodeData(opts, (err, decodedData) => {
+        if (err) {
+          this.logw('Decoding ABI data', err);
+          return reject(err);
+        }
+        return resolve(decodedData);
+      });
+    });
+  }
+
   getMultisigContractInstantiationInfo(opts) {
     const bc = this._getBlockchainExplorer(opts.chain || Defaults.EVM_CHAIN, opts.network);
     return new Promise((resolve, reject) => {
