@@ -104,3 +104,13 @@ EthRoutes.get('/api/ETH/:network/ethmultisig/transactions/:multisigContractAddre
     return res.status(500).send(err);
   }
 });
+
+EthRoutes.post('/api/ETH/:network/decode', async (req, res) => {
+  const { values, data } = req.body;
+  try {
+    const decodedData = await ETH.decodeData({ values, data });
+    res.json(decodedData);
+  } catch (err) {
+    res.status(500).send(err);
+  }
+});

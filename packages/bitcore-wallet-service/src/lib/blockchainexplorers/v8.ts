@@ -548,6 +548,20 @@ export class V8 {
       .catch(cb);
   }
 
+  decodeData(opts, cb) {
+    const url = this.baseUrl + '/decode';
+    console.log('[v8.js.378:url:] Decoding ABI Data', url);
+    this.request
+      .post(url, { body: opts, json: true })
+      .then(decodedData => {
+        decodedData = JSON.parse(decodedData);
+        return cb(null, decodedData);
+      })
+      .catch(err => {
+        return cb(err);
+      });
+  }
+
   initSocket(callbacks) {
     logger.info('V8 connecting socket at:' + this.host);
     // sockets always use the first server on the pull

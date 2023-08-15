@@ -140,6 +140,7 @@ export class TxProposal {
   multiSendContractAddress?: string;
   enableRBF?: boolean;
   replaceTxByFee?: boolean;
+  useCase?: string;
 
   static create(opts) {
     opts = opts || {};
@@ -272,6 +273,7 @@ export class TxProposal {
     x.excludeUnconfirmedUtxos = obj.excludeUnconfirmedUtxos;
     x.addressType = obj.addressType;
     x.customData = obj.customData;
+    x.useCase = obj.useCase;
 
     x.proposalSignature = obj.proposalSignature;
     x.signingMethod = obj.signingMethod;

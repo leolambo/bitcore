@@ -2285,6 +2285,20 @@ export class WalletService implements IWalletService {
     });
   }
 
+  decodeData(opts) {
+    const bc = this._getBlockchainExplorer(opts.chain || opts.coin || Defaults.EVM_CHAIN, opts.network);
+    return new Promise((resolve, reject) => {
+      if (!bc) return reject(new Error('Could not get blockchain explorer instance'));
+      bc.decodeData(opts, (err, decodedData) => {
+        if (err) {
+          this.logw('Decoding ABI data', err);
+          return reject(err);
+        }
+        return resolve(decodedData);
+      });
+    });
+  }
+
   getMultisigContractInstantiationInfo(opts) {
     const bc = this._getBlockchainExplorer(opts.chain || Defaults.EVM_CHAIN, opts.network);
     return new Promise((resolve, reject) => {
@@ -2462,6 +2476,21 @@ export class WalletService implements IWalletService {
 
                   return next();
                 },
+                async next => {
+                  if(opts.useCase == 'invoice'){
+                    for (const output of opts.outputs ) {
+                      if (output.data && !output.amount) {
+                        try{
+                          const decodedData = await this.decodeData({ data: output.data, values: ['amount'] })
+                          if (decodedData) { output.amount = decodedData; }
+                        } catch (err) {
+                          return next(err);
+                        }                        
+                      }
+                    }                    
+                  }
+                  return next();
+                },
                 next => {
                   let txOptsFee = fee;
 
@@ -2511,7 +2540,8 @@ export class WalletService implements IWalletService {
                     signingMethod: opts.signingMethod,
                     isTokenSwap: opts.isTokenSwap,
                     enableRBF: opts.enableRBF,
-                    replaceTxByFee: opts.replaceTxByFee
+                    replaceTxByFee: opts.replaceTxByFee,
+                    useCase: opts.useCase
                   };
                   txp = TxProposal.create(txOpts);
                   next();
