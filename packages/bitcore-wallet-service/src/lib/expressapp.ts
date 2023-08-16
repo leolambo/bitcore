@@ -765,7 +765,7 @@ export class ExpressApp {
       );
     });
 
-    /* THIS WAS NEVED ENABLED YET NOW 2020-04-07
+
     router.post('/v4/txproposals/', (req, res) => {
       getServerWithAuth(req, res, server => {
         req.body.txpVersion = 4;
@@ -775,8 +775,6 @@ export class ExpressApp {
         });
       });
     });
-
-*/
 
     // DEPRECATED
     router.post('/v1/addresses/', (req, res) => {
@@ -1305,6 +1303,18 @@ export class ExpressApp {
         };
         try {
           const nonce = await server.getNonce(opts);
+          res.json(nonce);
+        } catch (err) {
+          returnError(err, res, req);
+        }
+      });
+    });
+
+    router.post('/v1/txproposals/:id/setnonce', (req, res) => {
+      getServerWithAuth(req, res, async server => {
+        req.body.txProposalId = req.params['id'];
+        try {
+          const nonce = await server.setNonce(req.body);
           res.json(nonce);
         } catch (err) {
           returnError(err, res, req);

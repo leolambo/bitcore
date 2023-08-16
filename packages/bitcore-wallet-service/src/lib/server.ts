@@ -388,6 +388,16 @@ export class WalletService implements IWalletService {
 
     this.lock.runLocked(this.walletId, { waitTime }, cb, task);
   }
+
+  _releaseLock(lockName) {
+    return new Promise((resolve, reject) => {
+      this.lock.release(lockName, err => {
+        if (err) return reject(err);
+        return resolve(true);
+      });
+    })
+  }
+
   logi(message, ...args) {
     if (typeof message === 'string' && args.length > 0 && !message.endsWith('%o')) {
       for (let i = 0; i < args.length; i++) {
@@ -2268,7 +2278,64 @@ export class WalletService implements IWalletService {
         }
         return resolve(nonce);
       });
+
     });
+  }
+
+  // Gets an updated nonce based on exisiting signed transactions.
+  setNonce(opts) {
+    return new Promise((resolve, reject) => {
+      const lockName = this.getNonceLockName(opts.network, opts.address);
+
+      this.getWallet({}, async (err, wallet) => {
+        if (err) return reject(err);
+        this.getTx(
+          {
+            txProposalId: opts.txId
+          },
+          (err, txp) => {
+            if (err) return reject(err);
+
+            const lockParams =  { lockTime: Defaults.TX_ASSIGN_EVM_NONCE_TIME, waitTime: 0 };
+
+            this.lock.acquire(lockName, lockParams, async (err,release) => {
+              if (err) return reject(err);
+
+              try {
+                txp.nonce = await ChainService.getTransactionCount(this, wallet, opts.address);
+              } catch (error){
+                logger.error('Error getting nonce', err);
+                release();
+                return reject(error);
+              }
+
+              this.storage.storeTx(this.walletId, txp , err => {
+                if (err) {
+                  release();
+                  return reject(err);
+                }
+                // release lock after transaction has been signed and saved in storage
+                return resolve(txp);
+              });
+          });
+        });
+      })
+    });
+  }
+
+  getNonceLockName(network, address){
+    return 'getNonce:' + network + ':' + address;
+  }
+
+  async processAssignedNonce(wallet, txp){
+    try {
+      const lockName = this.getNonceLockName(wallet.network, txp.from);
+      await this._releaseLock(lockName)
+      return;
+    } catch (err) {
+      this.logw('Error releasing getNonce lock', err);
+      return;
+    }    
   }
 
   estimateGas(opts) {
@@ -2439,14 +2506,20 @@ export class WalletService implements IWalletService {
                   }
                   next();
                 },
-                async next => {
-                  if (!opts.nonce) {
-                    try {
-                      opts.nonce = await ChainService.getTransactionCount(this, wallet, opts.from);
-                    } catch (error) {
-                      return next(error);
-                    }
+                async next => {                  
+                  if (!_.isNumber(opts.nonce)){                    
+                    // If an EVM TX nonce is not given, we will set it during TX signing via setNonce
+                    if (opts.txpVersion >= 4 && ChainService.isEVMChain(wallet.chain)) {
+                      opts.nonce = null;
+                    } else {
+                      try {
+                        opts.nonce = await ChainService.getTransactionCount(this, wallet, opts.from);
+                      } catch (error) {
+                        return next(error);
+                      }
+                    }                    
                   }
+
                   return next();
                 },
                 async next => {
@@ -2804,11 +2877,115 @@ export class WalletService implements IWalletService {
     });
   }
 
+
+  _signTx(wallet, opts, cb) {
+    this.getTx(
+      {
+        txProposalId: opts.txProposalId
+      },
+      async (err, txp) => {
+        if (err) return cb(err);
+
+        if (opts.maxTxpVersion < txp.version) {
+          return cb(
+            new ClientError(
+              Errors.codes.UPGRADE_NEEDED,
+              'Your client does not support signing this transaction. Please upgrade'
+            )
+          );
+        }
+
+        const action = _.find(txp.actions, {
+          copayerId: this.copayerId
+        });
+        if (action) return cb(Errors.COPAYER_VOTED);
+        if (!txp.isPending()) return cb(Errors.TX_NOT_PENDING);
+
+        if (txp.signingMethod === 'schnorr' && !opts.supportBchSchnorr) return cb(Errors.UPGRADE_NEEDED);
+
+        const copayer = wallet.getCopayer(this.copayerId);
+        const isEVM = ChainService.isEVMChain(wallet.chain);
+
+        if (isEVM) {
+          if (!_.isNumber(txp.nonce)) return cb(Errors.NULL_NONCE);
+
+          try {
+            const txps = await this.getPendingTxsPromise({});
+            for (let t of txps) {
+              if (t.id !== txp.id && t.nonce <= txp.nonce && t.status !== 'rejected') {
+                return cb(Errors.TX_NONCE_CONFLICT);
+              }
+            }
+          } catch (err) {
+            return cb(err);
+          }
+
+          if (opts.proposalSignature) txp.proposalSignature = opts.proposalSignature;
+        }
+
+        try {
+          if (!txp.sign(this.copayerId, opts.signatures, copayer.xPubKey)) {
+            this.logw('Error signing transaction (BAD_SIGNATURES)');
+            this.logw('Client version:', this.clientVersion);
+            this.logw('Arguments:', JSON.stringify(opts));
+            this.logw('Transaction proposal:', JSON.stringify(txp));
+            const raw = ChainService.getBitcoreTx(txp).uncheckedSerialize();
+            this.logw('Raw tx:', raw);
+            return cb(Errors.BAD_SIGNATURES);
+          }
+        } catch (ex) {
+          this.logw('Error signing transaction proposal', ex);
+          return cb(ex);
+        }
+
+        this.storage.storeTx(this.walletId, txp, err => {
+          if (err) return cb(err);
+
+          async.series(
+            [
+              next => {
+                this._notifyTxProposalAction(
+                  'TxProposalAcceptedBy',
+                  txp,
+                  {
+                    copayerId: this.copayerId
+                  },
+                  next
+                );
+              },
+              next => {
+                if (txp.isAccepted()) {
+                  this._notifyTxProposalAction('TxProposalFinallyAccepted', txp, next);
+                } else {
+                  next();
+                }
+              },
+              next => {
+                try {
+                  if (isEVM) this.processAssignedNonce(wallet, txp);
+                  next();
+                } catch (err) {
+                  next(err);
+                }
+              }
+            ],
+            () => {
+              return cb(null, txp);
+            }
+          );
+        });
+      }
+    );
+  }
+
+
+
   /**
    * Sign a transaction proposal.
    * @param {Object} opts
    * @param {string} opts.txProposalId - The identifier of the transaction.
    * @param {string} opts.signatures - The signatures of the inputs of this tx for this copayer (in appearance order)
+   * @param {string} opts.proposalSignature - The latest proposal signature, used for EVM txps that updated nonce during signing
    * @param {string} opts.maxTxpVersion - Client's maximum supported txp version
    * @param {boolean} opts.supportBchSchnorr - indication whether to use schnorr for signing tx
    */
@@ -2825,90 +3002,13 @@ export class WalletService implements IWalletService {
         return cb(Err);
       }
 
-      this.getTx(
-        {
-          txProposalId: opts.txProposalId
-        },
-        async (err, txp) => {
-          if (err) return cb(err);
-
-          if (opts.maxTxpVersion < txp.version) {
-            return cb(
-              new ClientError(
-                Errors.codes.UPGRADE_NEEDED,
-                'Your client does not support signing this transaction. Please upgrade'
-              )
-            );
-          }
-
-          const action = _.find(txp.actions, {
-            copayerId: this.copayerId
-          });
-          if (action) return cb(Errors.COPAYER_VOTED);
-          if (!txp.isPending()) return cb(Errors.TX_NOT_PENDING);
-
-          if (txp.signingMethod === 'schnorr' && !opts.supportBchSchnorr) return cb(Errors.UPGRADE_NEEDED);
-
-          if (Constants.EVM_CHAINS[wallet.chain.toUpperCase()]) {
-            try {
-              const txps = await this.getPendingTxsPromise({});
-              for (let t of txps) {
-                if (t.id !== txp.id && t.nonce <= txp.nonce && t.status !== 'rejected') {
-                  return cb(Errors.TX_NONCE_CONFLICT);
-                }
-              }  
-            } catch (err) {
-              return cb(err);
-            }            
-          }
-
-          const copayer = wallet.getCopayer(this.copayerId);
-
-          try {
-            if (!txp.sign(this.copayerId, opts.signatures, copayer.xPubKey)) {
-              this.logw('Error signing transaction (BAD_SIGNATURES)');
-              this.logw('Client version:', this.clientVersion);
-              this.logw('Arguments:', JSON.stringify(opts));
-              this.logw('Transaction proposal:', JSON.stringify(txp));
-              const raw = ChainService.getBitcoreTx(txp).uncheckedSerialize();
-              this.logw('Raw tx:', raw);
-              return cb(Errors.BAD_SIGNATURES);
-            }
-          } catch (ex) {
-            this.logw('Error signing transaction proposal', ex);
-            return cb(ex);
-          }
-
-          this.storage.storeTx(this.walletId, txp, err => {
-            if (err) return cb(err);
-
-            async.series(
-              [
-                next => {
-                  this._notifyTxProposalAction(
-                    'TxProposalAcceptedBy',
-                    txp,
-                    {
-                      copayerId: this.copayerId
-                    },
-                    next
-                  );
-                },
-                next => {
-                  if (txp.isAccepted()) {
-                    this._notifyTxProposalAction('TxProposalFinallyAccepted', txp, next);
-                  } else {
-                    next();
-                  }
-                }
-              ],
-              () => {
-                return cb(null, txp);
-              }
-            );
-          });
-        }
-      );
+      if (ChainService.isEVMChain(wallet.chain)) {
+        this._runLocked(cb, cb => {
+          this._signTx(wallet, opts, cb);
+        });
+      } else {
+        this._signTx(wallet, opts, cb);
+      }
     });
   }
 
@@ -2976,6 +3076,16 @@ export class WalletService implements IWalletService {
             } catch (ex) {
               return cb(ex);
             }
+
+            if (ChainService.isEVMChain(wallet.chain)) {
+              if (!_.isNumber(txp.nonce)) {
+                return cb(Errors.NULL_NONCE);
+              }
+              if (!Validation.validateRawTx(wallet.chain, { raw: raw[0], txp, fields: ['from', 'nonce'] } )) {
+                return cb(Errors.MISMATCH_RAW_TX)
+              }
+            }
+
             this._broadcastRawTx(wallet.chain, wallet.network, raw, (err, txid) => {
               if (err || txid != txp.txid) {
                 if (!err || txp.txid != txid) {
