@@ -36,6 +36,10 @@ import {
 import { partition, range } from '../../../../utils';
 import { StatsUtil } from '../../../../utils/stats';
 import { TransformWithEventPipe } from '../../../../utils/streamWithEventPipe';
+import {
+  getProvider,
+  isValidProviderType
+} from '../../external/providers/provider';
 import { ExternalApiStream } from '../../external/streams/apiStream';
 import { ERC20Abi } from '../abi/erc20';
 import { MultisendAbi } from '../abi/multisend';
@@ -46,13 +50,9 @@ import { Erc20RelatedFilterTransform } from './erc20Transform';
 import { InternalTxRelatedFilterTransform } from './internalTxTransform';
 import { PopulateEffectsTransform } from './populateEffectsTransform';
 import { PopulateReceiptTransform } from './populateReceiptTransform';
-import {
-  getProvider,
-  isValidProviderType
-} from './provider';
 import { EVMListTransactionsStream } from './transform';
 
-export interface GetWeb3Response { rpc: CryptoRpc; web3: Web3; dataType: string };
+export interface GetWeb3Response { rpc: CryptoRpc; web3: Web3; dataType: string; lastPingTime?: number; };
 
 export interface BuildWalletTxsStreamParams {
   transactionStream: TransformWithEventPipe;
@@ -77,13 +77,18 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
       }
 
       try {
+        if (Date.now() - (rpc.lastPingTime || 0) < 10000) { // Keep the rpc from being blasted with ping calls
+          return rpc;
+        }
         await Promise.race([
           rpc.web3.eth.getBlockNumber(),
           new Promise((_, reject) => setTimeout(reject, 5000))
         ]);
+        rpc.lastPingTime = Date.now();
         return rpc; // return the first applicable rpc that's responsive
       } catch (e) {
         // try reconnecting
+        logger.info(`Reconnecting to ${this.chain}:${network}`);
         if (typeof (rpc.web3.currentProvider as any)?.disconnect === 'function') {
           (rpc.web3.currentProvider as any)?.disconnect?.();
           (rpc.web3.currentProvider as any)?.connect?.();
