@@ -87,15 +87,21 @@ describe('Solana API', function() {
     const mockedAddresses = [
       { mint: tokenAddress, state: 'initialized', pubkey: 'someTokenAccountAddress' }
     ];
+    const decimals = 6;
     
     const rpc = {
       getTokenAccountsByOwner: sandbox.stub().resolves(mockedAddresses)
     };
+    const connection = {
+      getTokenAccountBalance:  sandbox.stub().returns({
+        send: sandbox.stub().resolves({ value: { decimals } })  
+      })
+    }
     
-    sandbox.stub(SOL, 'getRpc').resolves({ rpc });
+    sandbox.stub(SOL, 'getRpc').resolves({ rpc, connection });
     
     const tokenAccounts = await SOL.getTokenAccountAddresses({ network, address });
-    expect(tokenAccounts).to.deep.eq([{ mintAddress: tokenAddress, ataAddress: 'someTokenAccountAddress' }]);
+    expect(tokenAccounts).to.deep.eq([{ mintAddress: tokenAddress, ataAddress: 'someTokenAccountAddress', decimals }]);
   });
 
   describe('#streamWalletTransactions', () => {
@@ -259,13 +265,7 @@ describe('Solana API', function() {
       blockTime: Date.now() / 1000,
       blockhash: 'hash123',
       previousBlockHash: 'prevHash123',
-      transactions: [
-        {
-          transaction: {
-            signatures: ['sig1']
-          }
-        }
-      ],
+      signatures: ['sig1'],
       rewards: [
         {
           lamports: 1000000
