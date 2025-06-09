@@ -265,13 +265,7 @@ describe('Solana API', function() {
       blockTime: Date.now() / 1000,
       blockhash: 'hash123',
       previousBlockHash: 'prevHash123',
-      transactions: [
-        {
-          transaction: {
-            signatures: ['sig1']
-          }
-        }
-      ],
+      signatures: ['sig1'],
       rewards: [
         {
           lamports: 1000000
