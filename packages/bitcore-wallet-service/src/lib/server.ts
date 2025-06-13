@@ -2859,12 +2859,17 @@ export class WalletService implements IWalletService {
           } catch (ex) {
             return cb(ex);
           }
-          if (txp.isRepublishEnabled() && txp.prePublishRaw) {
-            raw = txp.prePublishRaw;
-          }
-          const signingKey = this._getSigningKey(raw, opts.proposalSignature, copayer.requestPubKeys);
+
+          let signingKey = this._getSigningKey(raw, opts.proposalSignature, copayer.requestPubKeys);
           if (!signingKey) {
-            return cb(new ClientError('Invalid proposal signature'));
+            // If the txp has been published previously, we will verify the signature against the previously published raw tx
+            if (txp.isRepublishEnabled() && txp.prePublishRaw) {
+              raw = txp.prePublishRaw;
+              signingKey = this._getSigningKey(raw, opts.proposalSignature, copayer.requestPubKeys);
+            }
+            if (!signingKey) {
+              return cb(new ClientError('Invalid proposal signature'));
+            }
           }
           // Save signature info for other copayers to check
           txp.proposalSignature = opts.proposalSignature;
@@ -2876,16 +2881,16 @@ export class WalletService implements IWalletService {
           ChainService.checkTxUTXOs(this, txp, opts, err => {
             if (err) return cb(err);
             txp.status = 'pending';
-            opts.refresh = txp.isRepublishEnabled();
             ChainService.refreshTxData(this, txp, opts, (err, txp) => {
               if (err) return cb(err);
               if (txp.isRepublishEnabled() && !txp.prePublishRaw) {
+                // We save the original raw transaction for verification on republish
                 txp.prePublishRaw = raw;
               }
               this.storage.storeTx(this.walletId, txp, err => {
                 if (err) return cb(err);
-
-                this._notifyTxProposalAction('NewTxProposal', txp, () => {
+                const action = txp.isRepublishEnabled() && txp.prePublishRaw ? 'UpdatedTxProposal' : 'NewTxProposal';
+                this._notifyTxProposalAction(action, txp, () => {
                   if (txp.coin == 'bch' && txp.changeAddress) {
                     const format = opts.noCashAddr ? 'copay' : 'cashaddr';
                     txp.changeAddress.address = BCHAddressTranslator.translate(txp.changeAddress.address, format);
