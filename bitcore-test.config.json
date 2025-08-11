@@ -140,6 +140,58 @@
             "protocol": "https",
             "port": ""
           }
+        },
+        "testnet": {
+          "chainSource": "p2p",
+          "provider": {
+            "host": "api.testnet.solana.com",
+            "protocol": "https",
+            "port": ""
+          },
+          "providers": [
+            {
+              "host": "api.testnet.solana.com",
+              "protocol": "https",
+              "port": "",
+              "dataType": "combined"
+            }
+          ],
+          "p2pConfig": {
+            "commitmentLevels": ["confirmed"],
+            "maxConcurrentSubscriptions": 1000,
+            "healthCheckInterval": 30000,
+            "addressRefreshInterval": 60000,
+            "maxReconnectAttempts": 5
+          }
+        },
+        "mainnet": {
+          "chainSource": "p2p",
+          "provider": {
+            "host": "api.mainnet-beta.solana.com",
+            "protocol": "https",
+            "port": ""
+          },
+          "providers": [
+            {
+              "host": "api.mainnet-beta.solana.com", 
+              "protocol": "https",
+              "port": "",
+              "dataType": "combined"
+            },
+            {
+              "host": "your-quicknode-endpoint.solana-mainnet.quiknode.pro",
+              "protocol": "https",
+              "port": "",
+              "dataType": "realtime"
+            }
+          ],
+          "p2pConfig": {
+            "commitmentLevels": ["confirmed", "finalized"],
+            "maxConcurrentSubscriptions": 2000,
+            "healthCheckInterval": 30000,
+            "addressRefreshInterval": 60000,
+            "maxReconnectAttempts": 5
+          }
         }
       }
     },
