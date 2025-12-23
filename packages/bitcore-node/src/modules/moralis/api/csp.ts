@@ -21,7 +21,9 @@
  * APIs, eliminating the need for local P2P workers and MongoDB indexing for most queries.
  *
  * CURRENT STATE:
- * - Already used for EVM Layer 2 chains (BASE, MATIC, ARB, OP) in production
+ * - Already used for EVM Layer 2 chains (BASE, ARB, OP) in production
+ * - Polygon (MATIC) currently uses dedicated ./matic module with local P2P (same as ETH)
+ * - Polygon IS supported by Moralis and could be migrated to this module (config change)
  * - Extends BaseEVMStateProvider, overrides query methods to use Moralis API
  * - Still inherits RPC methods (broadcasting, balance checks) from base class
  *
@@ -89,7 +91,8 @@ export interface MoralisAddressSubscription {
  * MORALIS-SPECIFIC FEATURES:
  * - Webhooks for real-time transaction notifications
  * - Streams API for address monitoring
- * - Multiple EVM chains supported (ETH, BASE, ARB, OP, MATIC, etc.)
+ * - Multiple EVM chains supported: ETH, BASE, ARB, OP (currently using this module)
+ * - Also supports: MATIC/Polygon, BSC, Avalanche, Fantom, etc. (could be migrated)
  *
  * TODO! ARCHITECTURAL IMPROVEMENTS NEEDED:
  * 1. STREAM ARCHITECTURE: Currently passes req/res through the entire call chain.
