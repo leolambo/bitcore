@@ -61,6 +61,7 @@ export interface AdapterStreamParams {
     tipHeight?: number;
     tokenAddress?: string;
     pageSize?: number;
+    order?: string;
     transform?: (data: any) => any;
   };
 }
