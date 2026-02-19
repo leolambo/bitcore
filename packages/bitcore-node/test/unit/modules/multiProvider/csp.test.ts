@@ -801,6 +801,35 @@ describe('MultiProviderEVMStateProvider', function() {
       expect(result.success).to.be.false;
       expect(result.error).to.be.instanceOf(TimeoutError);
     });
+
+    it('should pause the stream after receiving first data item', async function() {
+      const stream = new PassThrough({ objectMode: true }) as any;
+      stream.url = 'http://test';
+      stream.headers = {};
+
+      const pauseSpy = sandbox.spy(stream, 'pause');
+      setTimeout(() => stream.write({ txid: '0xtx1' }), 10);
+
+      const result = await (provider as any)._preflightStream(stream, 5000);
+      expect(result.success).to.be.true;
+      expect(pauseSpy.calledOnce).to.be.true;
+    });
+
+    it('should clean up listeners after resolving', async function() {
+      const stream = new PassThrough({ objectMode: true }) as any;
+      stream.url = 'http://test';
+      stream.headers = {};
+
+      const listenersBefore = stream.listenerCount('data');
+      setTimeout(() => stream.write({ txid: '0xtx1' }), 10);
+
+      await (provider as any)._preflightStream(stream, 5000);
+
+      // All preflight listeners should be removed after resolution
+      expect(stream.listenerCount('data')).to.equal(listenersBefore);
+      expect(stream.listenerCount('error')).to.equal(0);
+      expect(stream.listenerCount('end')).to.equal(0);
+    });
   });
 
   // ==========================================
