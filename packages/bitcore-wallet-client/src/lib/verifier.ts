@@ -1,7 +1,7 @@
 import {
   BitcoreLib as Bitcore,
   BitcoreLibCash 
-} from 'crypto-wallet-core';
+} from '@bitpay-labs/crypto-wallet-core';
 import _ from 'lodash';
 import { singleton } from 'preconditions';
 import { Constants, Utils } from './common';
@@ -85,7 +85,7 @@ export class Verifier {
     const uniq = [];
     let error;
     for (const copayer of copayers || []) {
-      if (uniq[copayers.xPubKey]++) {
+      if (uniq[copayer.xPubKey]++) {
         log.error('Repeated public keys in server response');
         error = true;
       }

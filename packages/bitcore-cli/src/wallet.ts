@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import url from 'url';
-import * as prompt from '@clack/prompts';
 import {
   API,
   Utils as BWCUtils,
@@ -12,7 +11,7 @@ import {
   type Network,
   TssKey,
   Txp
-} from 'bitcore-wallet-client';
+} from '@bitpay-labs/bitcore-wallet-client';
 import {
   BitcoreLib,
   type Types as CWCTypes,
@@ -20,7 +19,8 @@ import {
   Message,
   Transactions,
   Web3
-} from 'crypto-wallet-core';
+} from '@bitpay-labs/crypto-wallet-core';
+import * as prompt from '@clack/prompts';
 import { Constants } from './constants';
 import { ERC20Abi } from './erc20Abi';
 import { FileStorage } from './filestorage';
@@ -230,6 +230,7 @@ export class Wallet implements IWallet {
       if ((obj as TssKeyType).metadata) {
         return new TssKey.TssKey(obj as TssKeyType);
       } else {
+        obj.version = obj.version ?? 1;
         return new Key({ seedType: 'object', seedData: obj });
       }
     };
@@ -422,8 +423,8 @@ export class Wallet implements IWallet {
     const network = this.network === 'livenet' ? 'mainnet' : this.network;
     const web3 = new Web3(Constants.PUBLIC_API[chain][network]);
     const contract = new web3.eth.Contract(ERC20Abi as any, address);
-    const token = await contract.methods.symbol().call();
-    const decimals = Number(await contract.methods.decimals().call());
+    const token = await contract.methods.symbol().call<string>();
+    const decimals = Number(await contract.methods.decimals().call<bigint>());
     return {
       code: token,
       displayCode: token,

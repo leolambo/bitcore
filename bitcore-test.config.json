@@ -60,12 +60,7 @@
             {
               "host": "localhost",
               "protocol": "ws",
-              "port": 9545
-            },
-            {
-              "host": "localhost",
-              "protocol": "ws",
-              "port": 9556
+              "port": 9546
             }
           ],
           "threads": 0
@@ -84,31 +79,26 @@
             {
               "host": "localhost",
               "protocol": "ws",
-              "port": 9556
+              "port": 9546
             }
           ],
           "threads": 0
         }
       },
       "BASE": {
-        "testnet": {
+        "sepolia": {
           "chainSource": "external",
           "module": "./moralis",
+          "needsL1Fee": true,
           "trustedPeers": [
             {
               "host": "localhost",
               "port": "30012/ws"
             }
           ],
-          "provider": {
-            "host": "docs-demo.base-mainnet.quiknode.pro/",
-            "protocol": "https",
-            "port": "",
-            "dataType": "historical"
-          },
           "providers": [
             {
-              "host": "docs-demo.base-mainnet.quiknode.pro/",
+              "host": "sepolia.base.org",
               "protocol": "https",
               "port": "",
               "dataType": "combined"
@@ -156,6 +146,9 @@
         "BTC": {
           "testnet3": "testnet",
           "testnet4": "testnet"
+        },
+        "BASE": {
+          "testnet": "sepolia"
         }
       }
     }

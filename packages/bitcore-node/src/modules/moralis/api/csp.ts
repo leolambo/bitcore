@@ -1,6 +1,7 @@
 import os from 'os';
+import { Web3 } from '@bitpay-labs/crypto-wallet-core';
+import { LRUCache } from 'lru-cache';
 import request from 'request';
-import Web3 from 'web3';
 import config from '../../../config';
 import logger from '../../../logger';
 import { MongoBound } from '../../../models/base';
@@ -17,6 +18,7 @@ import { ChainId, ChainNetwork } from '../../../types/ChainNetwork';
 import { IAddressSubscription } from '../../../types/ExternalProvider';
 import { GetBlockBeforeTimeParams, GetBlockParams, StreamAddressUtxosParams, StreamBlocksParams, StreamTransactionParams, StreamWalletTransactionsParams } from '../../../types/namespaces/ChainStateProvider';
 import { isDateValid } from '../../../utils';
+import { normalizeChainNetwork } from '../../../utils';
 import { ReadableWithEventPipe } from '../../../utils/streamWithEventPipe';
 
 
@@ -42,6 +44,8 @@ export class MoralisStateProvider extends BaseEVMStateProvider {
     'Content-Type': 'application/json',
     'X-API-Key': this.apiKey,
   };
+  blockAtTimeCache: { [key: string]: LRUCache<string, IBlock> } = {};
+
 
   constructor(chain: string) {
     super(chain);
@@ -51,6 +55,14 @@ export class MoralisStateProvider extends BaseEVMStateProvider {
   async getBlockBeforeTime(params: GetBlockBeforeTimeParams): Promise<IBlock|null> {
     const { chain, network, time } = params;
     const date = new Date(time || Date.now());
+    const chainNetwork = normalizeChainNetwork(chain, network);
+    if (!this.blockAtTimeCache[chainNetwork]) {
+      this.blockAtTimeCache[chainNetwork] = new LRUCache<string, IBlock>({ max: 1000 });
+    }
+    const cachedBlock = this.blockAtTimeCache[chainNetwork].get(date.toISOString());
+    if (cachedBlock !== undefined) {
+      return cachedBlock;
+    }
     const chainId = await this.getChainId({ network });
     const blockNum = await this._getBlockNumberByDate({ chainId, date });
     if (!blockNum) {
@@ -58,7 +70,9 @@ export class MoralisStateProvider extends BaseEVMStateProvider {
     }
     const blockId = blockNum.toString();
     const blocks = await this._getBlocks({ chain, network, blockId, args: { limit: 1 } });
-    return blocks.blocks[0] || null;
+    const block = blocks.blocks[0] || null;
+    this.blockAtTimeCache[chainNetwork].set(date.toISOString(), block);
+    return block;
   }
 
   // @override
@@ -79,7 +93,7 @@ export class MoralisStateProvider extends BaseEVMStateProvider {
       async () => {
         const { rpc } = await this.getWeb3(network, { type: 'historical' });
         const feerate = await rpc.estimateFee({ nBlocks: target, txType });
-        return { feerate, blocks: target };
+        return { feerate: Number(feerate), blocks: target };
       },
       CacheStorage.Times.Minute
     );
@@ -98,7 +112,7 @@ export class MoralisStateProvider extends BaseEVMStateProvider {
     const { web3 } = await this.getWeb3(network);
     const chainId = await this.getChainId({ network });
     const blockRange = await this.getBlocksRange({ ...params, chainId });
-    const tipHeight = await web3.eth.getBlockNumber();
+    const tipHeight = Number(await web3.eth.getBlockNumber());
     let isReading = false;
   
     const stream = new ReadableWithEventPipe({
@@ -149,7 +163,7 @@ export class MoralisStateProvider extends BaseEVMStateProvider {
     network = network.toLowerCase();
 
     const { web3 } = await this.getWeb3(network, { type: 'historical' });
-    const tipHeight = await web3.eth.getBlockNumber();
+    const tipHeight = Number(await web3.eth.getBlockNumber());
     const chainId = await this.getChainId({ network });
     const found = await this._getTransactionFromMoralis({ chain, network, chainId, txId });
     return { tipHeight, found };
@@ -222,18 +236,22 @@ export class MoralisStateProvider extends BaseEVMStateProvider {
 
     for (const blockNum of blockRange) {
       const block = await web3.eth.getBlock(blockNum);
-      const nextBlock = await web3.eth.getBlock(block.number + 1);
+      const nextBlock = await web3.eth.getBlock(block.number + 1n);
       const convertedBlock = EVMBlockStorage.convertRawBlock(chain, network, block);
-      convertedBlock.nextBlockHash = nextBlock?.hash;
+      convertedBlock.nextBlockHash = nextBlock?.hash!;
       blocks.push(convertedBlock);
     }
     
-    const tipHeight = await web3.eth.getBlockNumber();
+    const tipHeight = Number(await web3.eth.getBlockNumber());
     return { tipHeight, blocks };
   }
 
   // @override
-  async _getBlockNumberByDate({ chainId, date }) {
+  async _getBlockNumberByDate(params: {
+    date: Date;
+    chainId: string | bigint;
+  }) {
+    const { date, chainId } = params;
     if (!date || !isDateValid(date)) {
       throw new Error('Invalid date');
     }

@@ -1,3 +1,7 @@
+import BitcoreLib from '@bitpay-labs/bitcore-lib';
+import BitcoreLibCash from '@bitpay-labs/bitcore-lib-cash';
+import BitcoreLibDoge from '@bitpay-labs/bitcore-lib-doge';
+import BitcoreLibLtc from '@bitpay-labs/bitcore-lib-ltc';
 import {
   API_ROOT,
   API_ROOT_ETH,
@@ -7,10 +11,6 @@ import {
   UTXO_DEFAULT_REFRESH_INTERVAL,
 } from './constants';
 import {BlockTransactionDetails} from './models';
-import BitcoreLib from 'bitcore-lib';
-import BitcoreLibCash from 'bitcore-lib-cash';
-import BitcoreLibDoge from 'bitcore-lib-doge';
-import BitcoreLibLtc from 'bitcore-lib-ltc';
 
 export const buildTime = (time: string): string => {
   const diffMs = Math.abs(Date.now() - Date.parse(time));
@@ -172,7 +172,6 @@ export const normalizeParams = (
 export const getLib = (currency: string) => {
   switch (currency.toUpperCase()) {
     case 'BTC':
-    default:
       return BitcoreLib;
     case 'BCH':
       return BitcoreLibCash;
@@ -180,8 +179,27 @@ export const getLib = (currency: string) => {
       return BitcoreLibDoge;
     case 'LTC':
       return BitcoreLibLtc;
+    default:
+      return BitcoreLib;
   }
 };
+
+export const getName = (currency: string) => {
+  switch (currency.toUpperCase()) {
+    case 'BTC':
+      return 'Bitcoin';
+    case 'BCH':
+      return 'Bitcoin Cash';
+    case 'DOGE':
+      return 'Doge';
+    case 'LTC':
+      return 'Litecoin';
+    case 'ETH':
+      return 'Ethereum';
+    default:
+      return 'Bitcoin';
+  }
+}
 
 export const getDifficultyFromBits = (bits: number) => {
   const maxBody = Math.log(0x00ffff);

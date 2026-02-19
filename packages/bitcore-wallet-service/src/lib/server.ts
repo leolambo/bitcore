@@ -1,11 +1,11 @@
-import * as async from 'async';
 import {
   BitcoreLib as Bitcore,
   BitcoreLibCash as BitcoreCash,
   BitcoreLibDoge as BitcoreDoge,
   BitcoreLibLtc as BitcoreLtc,
   Validation
-} from 'crypto-wallet-core';
+} from '@bitpay-labs/crypto-wallet-core';
+import * as async from 'async';
 import EmailValidator from 'email-validator';
 import * as _ from 'lodash';
 import Moralis from 'moralis';
@@ -141,7 +141,7 @@ export class WalletService implements IWalletService {
   walletId: string;
   copayerId: string;
   appName: string;
-  appVersion: { agent?: string; major?: number; minor?: number };
+  appVersion: { agent?: string; major?: number; minor?: number; patch?: number };
   parsedClientVersion: { agent?: string; major?: number; minor?: number };
   clientVersion: string;
   copayerIsSupportStaff: boolean;
@@ -680,7 +680,7 @@ export class WalletService implements IWalletService {
     }
 
     const derivationStrategy = Constants.DERIVATION_STRATEGIES.BIP44;
-    let addressType = opts.n === 1 ? Constants.SCRIPT_TYPES.P2PKH : Constants.SCRIPT_TYPES.P2SH;
+    let addressType: string = opts.n === 1 ? Constants.SCRIPT_TYPES.P2PKH : Constants.SCRIPT_TYPES.P2SH;
 
     if (opts.useNativeSegwit && Utils.checkValueInCollection(opts.chain, Constants.NATIVE_SEGWIT_CHAINS)) {
       switch (Number(opts.segwitVersion)) {
@@ -4624,7 +4624,7 @@ export class WalletService implements IWalletService {
       let inactiveCounter = 0;
       const allAddresses = [];
 
-      let gap = Defaults.SCAN_ADDRESS_GAP;
+      let gap: number = Defaults.SCAN_ADDRESS_GAP;
 
       // when powerScanning, we just accept gap<=3
       if (step > 1) {
@@ -4997,66 +4997,6 @@ export class WalletService implements IWalletService {
     } else {
       return cb(new Error('Could not get ERC20 spender approval whitelist'));
     }
-  }
-
-  getPayId(url: string): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const headers = {
-        'PayID-Version': '1.0',
-        Accept: 'application/payid+json'
-      };
-      this.request.get(
-        url,
-        {
-          headers,
-          json: true
-        },
-        (err, data) => {
-          if (err) {
-            return reject(err.body ? err.body : err);
-          } else {
-            return resolve(data.body ? data.body : data);
-          }
-        }
-      );
-    });
-  }
-
-  discoverPayId(req): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const URL: string = `https://${req.domain}/.well-known/webfinger?resource=payid%3A${req.handle}%24${req.domain}`;
-      const headers = {
-        'PayID-Version': '1.0',
-        Accept: 'application/payid+json'
-      };
-      this.request.get(
-        URL,
-        {
-          headers,
-          json: true
-        },
-        (err, data) => {
-          if (err) {
-            return reject(err.body ? err.body : err);
-          } else {
-            let url;
-            if (data.body && data.body.links && data.body.links[0].template) {
-              const template: string = data.body.links[0].template;
-              url = template.replace('{acctpart}', req.handle);
-            } else {
-              url = `https://${req.domain}/${req.handle}`;
-            }
-            this.getPayId(url)
-              .then(data => {
-                return resolve(data);
-              })
-              .catch(err => {
-                return reject(err);
-              });
-          }
-        }
-      );
-    });
   }
 
   /**

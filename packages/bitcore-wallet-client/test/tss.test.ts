@@ -1,15 +1,15 @@
 'use strict';
 
 import sinon from 'sinon';
-import chai from 'chai';
-import BWS from 'bitcore-wallet-service';
+import * as chai from 'chai';
+import BWS from '@bitpay-labs/bitcore-wallet-service';
 import request from 'supertest';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { ECIES } from 'bitcore-tss';
+import { ECIES } from '@bitpay-labs/bitcore-tss';
 import { Request } from '../src/lib/request';
-import { BitcoreLib, Deriver } from 'crypto-wallet-core';
+import { BitcoreLib, Deriver } from '@bitpay-labs/crypto-wallet-core';
 import { TssKeyGen, TssKey } from '../src/lib/tsskey';
 import { TssSign } from '../src/lib/tsssign';
 import log from '../src/lib/log';

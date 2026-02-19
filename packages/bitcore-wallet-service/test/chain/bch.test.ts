@@ -1,8 +1,8 @@
 'use strict';
 
-import chai from 'chai';
+import * as chai from 'chai';
 import 'chai/register-should';
-import { BitcoreLibCash } from 'crypto-wallet-core';
+import { BitcoreLibCash } from '@bitpay-labs/crypto-wallet-core';
 import { ChainService } from '../../src/lib/chain';
 import { TxProposal } from '../../src/lib/model/txproposal';
 import { Common } from '../../src/lib/common';

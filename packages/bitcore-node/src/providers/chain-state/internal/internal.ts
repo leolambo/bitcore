@@ -1,24 +1,29 @@
 
 import { Transform } from 'stream';
-import { Validation } from 'crypto-wallet-core';
-import { ObjectId } from 'mongodb';
+import { Validation } from '@bitpay-labs/crypto-wallet-core';
+import { LRUCache } from 'lru-cache';
 import { LoggifyClass } from '../../../decorators/Loggify';
-import { MongoBound } from '../../../models/base';
-import { BitcoinBlockStorage, IBtcBlock } from '../../../models/block';
+import { BitcoinBlockStorage, type IBtcBlock } from '../../../models/block';
 import { CacheStorage } from '../../../models/cache';
-import { CoinStorage, ICoin } from '../../../models/coin';
+import { CoinStorage, type ICoin } from '../../../models/coin';
 import { StateStorage } from '../../../models/state';
-import { ITransaction, TransactionStorage } from '../../../models/transaction';
-import { IWallet, WalletStorage } from '../../../models/wallet';
-import { IWalletAddress, WalletAddressStorage } from '../../../models/walletAddress';
+import { type ITransaction, TransactionStorage } from '../../../models/transaction';
+import { type IWallet, WalletStorage } from '../../../models/wallet';
+import { type IWalletAddress, WalletAddressStorage } from '../../../models/walletAddress';
 import { RPC } from '../../../rpc';
 import { Config } from '../../../services/config';
 import { Storage } from '../../../services/storage';
-import { IBlock } from '../../../types/Block';
-import { CoinJSON, SpentHeightIndicators } from '../../../types/Coin';
-import { IUtxoNetworkConfig } from '../../../types/Config';
-import { TransactionJSON } from '../../../types/Transaction';
-import {
+import { type CoinJSON, SpentHeightIndicators } from '../../../types/Coin';
+import { normalizeChainNetwork } from '../../../utils';
+import { StringifyJsonStream } from '../../../utils/jsonStream';
+import { ListTransactionsStream } from './transforms';
+import type { MongoBound } from '../../../models/base';
+import type { IBlock } from '../../../types/Block';
+import type { IUtxoNetworkConfig } from '../../../types/Config';
+import type { TransactionJSON } from '../../../types/Transaction';
+import type { StreamBlocksParams } from '../../../types/namespaces/ChainStateProvider';
+import type { GetBlockBeforeTimeParams, StreamTransactionParams, WalletBalanceType } from '../../../types/namespaces/ChainStateProvider';
+import type {
   BroadcastTransactionParams,
   CreateWalletParams,
   DailyTransactionsParams,
@@ -38,17 +43,17 @@ import {
   UpdateWalletParams,
   WalletCheckParams
 } from '../../../types/namespaces/ChainStateProvider';
-import { StreamBlocksParams } from '../../../types/namespaces/ChainStateProvider';
-import { GetBlockBeforeTimeParams, StreamTransactionParams, WalletBalanceType } from '../../../types/namespaces/ChainStateProvider';
-import { StringifyJsonStream } from '../../../utils/jsonStream';
-import { ListTransactionsStream } from './transforms';
+import type { ObjectId } from 'mongodb';
 
 @LoggifyClass
 export class InternalStateProvider implements IChainStateService {
   chain: string;
+  blockAtTimeCache: { [key: string]: LRUCache<string, IBlock> };
+
   constructor(chain: string, private WalletStreamTransform = ListTransactionsStream) {
     this.chain = chain;
     this.chain = this.chain.toUpperCase();
+    this.blockAtTimeCache = {};
   }
 
   getRPC(chain: string, network: string) {
@@ -175,6 +180,14 @@ export class InternalStateProvider implements IChainStateService {
   async getBlockBeforeTime(params: GetBlockBeforeTimeParams): Promise<IBlock|null> {
     const { chain, network, time } = params;
     const date = new Date(time || Date.now());
+    const chainNetwork = normalizeChainNetwork(chain, network);
+    if (!this.blockAtTimeCache[chainNetwork]) {
+      this.blockAtTimeCache[chainNetwork] = new LRUCache<string, IBlock>({ max: 1000 });
+    }
+    const cachedBlock = this.blockAtTimeCache[chainNetwork].get(date.toISOString());
+    if (cachedBlock !== undefined) {
+      return cachedBlock;
+    }
     const [block] = await BitcoinBlockStorage.collection
       .find({
         chain,
@@ -184,7 +197,8 @@ export class InternalStateProvider implements IChainStateService {
       .limit(1)
       .sort({ timeNormalized: -1 })
       .toArray();
-    return block;
+    this.blockAtTimeCache[chainNetwork].set(date.toISOString(), block || null);
+    return block || null;
   }
 
   async streamTransactions(params: StreamTransactionsParams) {

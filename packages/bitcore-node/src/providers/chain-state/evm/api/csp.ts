@@ -1,29 +1,41 @@
-import { CryptoRpc } from 'crypto-rpc';
-import { ObjectID } from 'mongodb';
-import Web3 from 'web3';
-import { Transaction } from 'web3-eth';
-import { AbiItem } from 'web3-utils';
-import Config from '../../../../config';
+import { CryptoRpc } from '@bitpay-labs/crypto-rpc';
+import { Utils, Web3, type Web3Types } from '@bitpay-labs/crypto-wallet-core';
 import {
   historical,
   internal,
   realtime
 } from '../../../../decorators/decorators';
 import logger from '../../../../logger';
-import { MongoBound } from '../../../../models/base';
-import { ITransaction } from '../../../../models/baseTransaction';
+import { type ITransaction } from '../../../../models/baseTransaction';
 import { CacheStorage } from '../../../../models/cache';
 import { WalletAddressStorage } from '../../../../models/walletAddress';
 import { InternalStateProvider } from '../../../../providers/chain-state/internal/internal';
+import { Config } from '../../../../services/config';
 import { Storage } from '../../../../services/storage';
 import { IBlock } from '../../../../types/Block';
 import { ChainId } from '../../../../types/ChainNetwork';
 import { SpentHeightIndicators } from '../../../../types/Coin';
-import { IChainConfig, IEVMNetworkConfig, IProvider } from '../../../../types/Config';
-import {
+import { normalizeChainNetwork, partition, range } from '../../../../utils';
+import { StatsUtil } from '../../../../utils/stats';
+import { TransformWithEventPipe } from '../../../../utils/streamWithEventPipe';
+import { ExternalApiStream } from '../../external/streams/apiStream';
+import { ERC20Abi } from '../abi/erc20';
+import { MultisendAbi } from '../abi/multisend';
+import { EVMBlockStorage } from '../models/block';
+import { EVMTransactionStorage } from '../models/transaction';
+import { EVMTransactionJSON, IEVMBlock, IEVMTransaction, IEVMTransactionInProcess } from '../types';
+import { Erc20RelatedFilterTransform } from './erc20Transform';
+import { InternalTxRelatedFilterTransform } from './internalTxTransform';
+import { PopulateEffectsForAddressTransform } from './populateEffectsTransform';
+import { PopulateReceiptTransform } from './populateReceiptTransform';
+import { EVMListTransactionsStream } from './transform';
+import type { MongoBound } from '../../../../models/base';
+import type { IChainConfig, IEVMNetworkConfig, ProviderDataType } from '../../../../types/Config';
+import type {
   BroadcastTransactionParams,
   GetBalanceForAddressParams,
   GetBlockParams,
+  GetEstimateSmartFeeParams,
   GetWalletBalanceAtTimeParams,
   GetWalletBalanceParams,
   IChainStateService,
@@ -35,54 +47,94 @@ import {
   UpdateWalletParams,
   WalletBalanceType
 } from '../../../../types/namespaces/ChainStateProvider';
-import { partition, range } from '../../../../utils';
-import { StatsUtil } from '../../../../utils/stats';
-import { TransformWithEventPipe } from '../../../../utils/streamWithEventPipe';
-import {
-  getProvider,
-  isValidProviderType
-} from '../../external/providers/provider';
-import { ExternalApiStream } from '../../external/streams/apiStream';
-import { ERC20Abi } from '../abi/erc20';
-import { MultisendAbi } from '../abi/multisend';
-import { EVMBlockStorage } from '../models/block';
-import { EVMTransactionStorage } from '../models/transaction';
-import { ERC20Transfer, EVMTransactionJSON, IEVMBlock, IEVMTransaction, IEVMTransactionInProcess } from '../types';
-import { Erc20RelatedFilterTransform } from './erc20Transform';
-import { InternalTxRelatedFilterTransform } from './internalTxTransform';
-import { PopulateEffectsTransform } from './populateEffectsTransform';
-import { PopulateReceiptTransform } from './populateReceiptTransform';
-import { EVMListTransactionsStream } from './transform';
+import type { EthRpc } from '@bitpay-labs/crypto-rpc/lib/eth/EthRpc';
+import type { ObjectID } from 'mongodb';
 
-export interface GetWeb3Response { rpc: CryptoRpc; web3: Web3; dataType: string; lastPingTime?: number };
+export interface GetWeb3Response { rpc: EthRpc; web3: Web3; dataType: string; lastPingTime?: number };
 
 export interface BuildWalletTxsStreamParams {
   transactionStream: TransformWithEventPipe;
-  populateEffects: PopulateEffectsTransform;
+  populateEffects: PopulateEffectsForAddressTransform;
   walletAddresses: string[];
 }
 
 
 export class BaseEVMStateProvider extends InternalStateProvider implements IChainStateService {
   config: IChainConfig<IEVMNetworkConfig>;
-  static rpcs = {} as { [chain: string]: { [network: string]: GetWeb3Response[] } };
+  static rpcs: { [chainNetwork: string]: { historical: GetWeb3Response[]; realtime: GetWeb3Response[] } } = {};
+  static rpcIndicies: { [chainNetwork: string]: { historical: number; realtime: number } } = {};
+  static rpcInitialized: { [chain: string]: boolean } = {};
 
   constructor(public chain: string = 'ETH') {
     super(chain);
-    this.config = Config.chains[this.chain] as IChainConfig<IEVMNetworkConfig>;
+    this.config = Config.get().chains[this.chain] as IChainConfig<IEVMNetworkConfig>;
+    BaseEVMStateProvider.initializeRpcs(this.chain);
   }
 
-  /**
-   * Multi-provider pattern for RPC - reference doc Section "RPC vs Indexed APIs"
-   * This shows sequential failover already working for RPC providers.
-   * Implement the same pattern for indexed APIs (getTransaction, streamAddressTransactions).
-   */
-  async getWeb3(network: string, params?: { type: IProvider['dataType'] }): Promise<GetWeb3Response> {
-    for (const rpc of BaseEVMStateProvider.rpcs[this.chain]?.[network] || []) {
-      if (!isValidProviderType(params?.type, rpc.dataType)) {
-        continue;
-      }
+  static initializeRpcs(chain: string) {
+    if (BaseEVMStateProvider.rpcInitialized[chain]) {
+      return;
+    }
+    BaseEVMStateProvider.rpcInitialized[chain] = true;
+    
+    const configs = Config.get().chains[chain] as IChainConfig<IEVMNetworkConfig>;
+    for (const [network, config] of Object.entries(configs)) {
+      const chainNetwork = normalizeChainNetwork(chain, network);
+      BaseEVMStateProvider.rpcs[chainNetwork] = { historical: [], realtime: [] };
+      BaseEVMStateProvider.rpcIndicies[chainNetwork] = { historical: 0, realtime: 0 };
 
+      const providers = config.provider ? [config.provider] : config.providers || [];
+      for (const providerConfig of providers) {
+        const rpcConfig = { ...providerConfig, chain, isEVM: true };
+        const rpc = new CryptoRpc(rpcConfig as any).get(chain) as EthRpc;
+        const rpcObj = {
+          rpc,
+          web3: rpc.web3,
+          dataType: rpcConfig.dataType || 'combined'
+        };
+        if (rpcObj.dataType === 'historical' || rpcObj.dataType === 'combined') {
+          BaseEVMStateProvider.rpcs[chainNetwork].historical.push(rpcObj);
+        }
+        if (rpcObj.dataType === 'realtime' || rpcObj.dataType === 'combined') {
+          BaseEVMStateProvider.rpcs[chainNetwork].realtime.push(rpcObj);
+        }
+      }
+    }
+  }
+
+  static teardownRpcs() {
+    for (const [chainNetwork, rpcObj] of Object.entries(BaseEVMStateProvider.rpcs)) {
+      logger.info('Tearing down RPC connections for %o', chainNetwork);
+      for (const rpc of (rpcObj.historical || []).concat(rpcObj.realtime || [])) {
+        try {
+          rpc.web3.currentProvider?.disconnect?.();
+        } catch { /* ignore -- already disconnected or non-socket connection (e.g. http) */}
+      }
+      delete BaseEVMStateProvider.rpcs[chainNetwork];
+      delete BaseEVMStateProvider.rpcIndicies[chainNetwork];
+      delete BaseEVMStateProvider.rpcInitialized[chainNetwork.split(':')[0]];
+    }
+  }
+
+  async getWeb3(network: string, params?: { type: ProviderDataType }): Promise<GetWeb3Response> {
+    const chainNetwork = normalizeChainNetwork(this.chain, network);
+
+    const type = params?.type || 'realtime';
+    if (!BaseEVMStateProvider.rpcs[chainNetwork]?.[type]?.length) {
+      throw new Error(`No configuration found for ${chainNetwork} and "${type}" compatible dataType`);
+    }
+    if (BaseEVMStateProvider.rpcs[chainNetwork][type].length === 1) {
+      return BaseEVMStateProvider.rpcs[chainNetwork][type][0];
+    }
+
+    // Load-balance the RPCs in a round-robin fashion
+    const lastUsedIndex = BaseEVMStateProvider.rpcIndicies[chainNetwork][type];
+    const getNextIndex = (index) => (index + 1) % BaseEVMStateProvider.rpcs[chainNetwork][type].length;
+    const initialIndex = getNextIndex(lastUsedIndex);
+    let index = initialIndex;
+    let rpc: GetWeb3Response;
+    do {
+      rpc = BaseEVMStateProvider.rpcs[chainNetwork][type][index];
       try {
         if (Date.now() - (rpc.lastPingTime || 0) < 10000) { // Keep the rpc from being blasted with ping calls
           return rpc;
@@ -92,52 +144,44 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
           new Promise((_, reject) => setTimeout(reject, 5000))
         ]);
         rpc.lastPingTime = Date.now();
-        return rpc; // return the first applicable rpc that's responsive
+        // Update the most recently used index
+        BaseEVMStateProvider.rpcIndicies[chainNetwork][type] = index;
+        return rpc;
       } catch {
-        // try reconnecting
-        logger.info(`Reconnecting to ${this.chain}:${network}`);
-        if (typeof (rpc.web3.currentProvider as any)?.disconnect === 'function') {
-          (rpc.web3.currentProvider as any)?.disconnect?.();
-          (rpc.web3.currentProvider as any)?.connect?.();
-          if ((rpc.web3.currentProvider as any)?.connected) {
-            return rpc;
+        if (
+          rpc.web3.currentProvider instanceof Web3.providers.WebsocketProvider &&
+          (['connected', 'connecting'].includes(rpc.web3.currentProvider.getStatus()))
+        ) {
+          try {
+            // try reconnecting
+            rpc.web3.currentProvider.disconnect();
+            rpc.web3.currentProvider.connect();
+          } catch (err) {
+            logger.warn('Error reconnecting to %o:%o RPC websocket: %o', this.chain, network, err);
           }
         }
-        const idx = BaseEVMStateProvider.rpcs[this.chain][network].indexOf(rpc);
-        BaseEVMStateProvider.rpcs[this.chain][network].splice(idx, 1);
       }
-    }
+      index = getNextIndex(index);
+    } while (index !== initialIndex);
 
-    logger.info(`Making a new connection for ${this.chain}:${network}`);
-    const dataType = params?.type;
-    const providerConfig = getProvider({ network, dataType, config: this.config });
-    // Default to using ETH CryptoRpc with all EVM chain configs
-    const rpcConfig = { ...providerConfig, chain: 'ETH', currencyConfig: {} };
-    const rpc = new CryptoRpc(rpcConfig, {}).get('ETH');
-    const rpcObj = { rpc, web3: rpc.web3, dataType: rpcConfig.dataType || 'combined' };
-    if (!BaseEVMStateProvider.rpcs[this.chain]) {
-      BaseEVMStateProvider.rpcs[this.chain] = {};
-    }
-    if (!BaseEVMStateProvider.rpcs[this.chain][network]) {
-      BaseEVMStateProvider.rpcs[this.chain][network] = [];
-    }
-    BaseEVMStateProvider.rpcs[this.chain][network].push(rpcObj);
-    return rpcObj;
+    // If none have worked, return the last (successful?) rpc
+    logger.warn('All %o:%o RPCs are unresponsive, returning last used RPC', this.chain, network);
+    return BaseEVMStateProvider.rpcs[chainNetwork][type][lastUsedIndex];
   }
 
   async erc20For(network: string, address: string) {
     const { web3 } = await this.getWeb3(network);
-    const contract = new web3.eth.Contract(ERC20Abi as AbiItem[], address);
+    const contract = new web3.eth.Contract(ERC20Abi, address);
     return contract;
   }
 
   async getMultisendContract(network: string, address: string) {
     const { web3 } = await this.getWeb3(network);
-    const contract = new web3.eth.Contract(MultisendAbi as AbiItem[], address);
+    const contract = new web3.eth.Contract(MultisendAbi, address);
     return contract;
   }
 
-  async getERC20TokenInfo(network: string, tokenAddress: string) {
+  async getERC20TokenInfo(network: string, tokenAddress: string): Promise<{ name: string; decimals: number; symbol: string }> {
     const token = await this.erc20For(network, tokenAddress);
     const [name, decimals, symbol] = await Promise.all([
       token.methods.name().call(),
@@ -147,18 +191,18 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
 
     return {
       name,
-      decimals,
+      decimals: Number(decimals),
       symbol
     };
   }
 
-  async getERC20TokenAllowance(network: string, tokenAddress: string, ownerAddress: string, spenderAddress: string) {
+  async getERC20TokenAllowance(network: string, tokenAddress: string, ownerAddress: string, spenderAddress: string): Promise<number> {
     const token = await this.erc20For(network, tokenAddress);
-    return await token.methods.allowance(ownerAddress, spenderAddress).call();
+    return Number(await token.methods.allowance(ownerAddress, spenderAddress).call());
   }
 
   @historical
-  async getFee(params) {
+  async getFee(params: GetEstimateSmartFeeParams): Promise<{ feerate: number; blocks: number }> {
     let { network } = params;
     const { target = 4, txType } = params;
     const chain = this.chain;
@@ -166,7 +210,7 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
       network = 'mainnet';
     }
     let cacheKey = `getFee-${chain}-${network}-${target}`;
-    if (txType) {
+    if (txType != null) {
       cacheKey += `-type${txType}`;
     }
 
@@ -176,7 +220,7 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
         let feerate;
         if (txType?.toString() === '2') {
           const { rpc } = await this.getWeb3(network, { type: 'historical' });
-          feerate = await rpc.estimateFee({ nBlocks: target, txType });
+          feerate = await rpc.estimateFee({ nBlocks: target, txType: txType?.toString() });
         } else {
           const txs = await EVMTransactionStorage.collection
             .find({ chain, network, blockHeight: { $gt: 0 } })
@@ -203,7 +247,7 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
     );
   }
 
-  async getPriorityFee(params) {
+  async getPriorityFee(params): Promise<{ feerate: number }> {
     let { network } = params;
     const { percentile } = params;
     const chain = this.chain;
@@ -218,7 +262,7 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
       async () => {
         const { rpc } = await this.getWeb3(network);
         const feerate = await rpc.estimateMaxPriorityFee({ percentile: priorityFeePercentile });
-        return { feerate };
+        return { feerate: Number(feerate) };
       },
       CacheStorage.Times.Minute
     );
@@ -279,8 +323,8 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
       cacheKey,
       async () => {
         if (tokenAddress) {
-          const token = new web3.eth.Contract(ERC20Abi as AbiItem[], tokenAddress);
-          const balance = await token.methods.balanceOf(address).call({}, blockNumber);
+          const token = new web3.eth.Contract(ERC20Abi, tokenAddress);
+          const balance = await token.methods.balanceOf(address).call<bigint>({}, blockNumber);
           const numberBalance = '0x' + BigInt(balance).toString(16);
           return { confirmed: numberBalance, unconfirmed: '0x0', balance: numberBalance };
         } else {
@@ -304,19 +348,22 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
 
   async getReceipt(network: string, txid: string) {
     const { web3 } = await this.getWeb3(network, { type: 'historical' });
-    return web3.eth.getTransactionReceipt(txid);
+    const receipt = await web3.eth.getTransactionReceipt(txid);
+    return Utils.BI.scrubBigIntsInObject(receipt);
   }
 
   async populateReceipt(tx: MongoBound<IEVMTransaction>) {
     if (!tx.receipt) {
       const receipt = await this.getReceipt(tx.network, tx.txid);
       if (receipt) {
-        const fee = receipt.gasUsed * tx.gasPrice;
+        const fee = Number(BigInt(receipt.gasUsed) * BigInt(tx.gasPrice));
         await EVMTransactionStorage.collection.updateOne({ _id: tx._id }, { $set: { receipt, fee } });
-        tx.receipt = receipt;
+        tx.receipt = receipt as any;
         tx.fee = fee;
       }
     }
+    // logs can be very large and are not currently needed for any use case in this codebase.
+    delete tx.receipt?.logs;
     return tx;
   }
 
@@ -324,6 +371,11 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
     if (!tx.effects || (tx.effects && tx.effects.length == 0)) {
       tx.effects = EVMTransactionStorage.getEffects(tx as IEVMTransactionInProcess);
     }
+    return tx;
+  }
+
+  populateEffectsForAddresses(tx: MongoBound<IEVMTransaction>, addresses: Array<string>) {
+    tx.effects = EVMTransactionStorage.getEffectsForAddresses(tx as IEVMTransactionInProcess, addresses);
     return tx;
   }
 
@@ -551,8 +603,8 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
         return resolve();
       }
       const ethTransactionTransform = new EVMListTransactionsStream(walletAddresses, args.tokenAddress);
-      const populateReceipt = new PopulateReceiptTransform();
-      const populateEffects = new PopulateEffectsTransform();
+      const populateReceipt = new PopulateReceiptTransform(this);
+      const populateEffects = new PopulateEffectsForAddressTransform(this, walletAddresses);
 
       const streamParams: BuildWalletTxsStreamParams = {
         transactionStream,
@@ -587,13 +639,33 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
     let { transactionStream } = streamParams;
     const { populateEffects } = streamParams;
 
-    transactionStream = EVMTransactionStorage.collection
+    // Store cursor reference for cleanup
+    const cursor = EVMTransactionStorage.collection
       .find(query)
       .sort({ blockTimeNormalized: 1 })
-      .addCursorFlag('noCursorTimeout', true)
-      .pipe(new TransformWithEventPipe({ objectMode: true, passThrough: true }));
+      .addCursorFlag('noCursorTimeout', true);
 
-    transactionStream = transactionStream.eventPipe(populateEffects); // For old db entires
+    // Add cleanup handlers when client disconnects
+    let cursorClosed = false;
+    const cleanupCursor = () => {
+      if (!cursorClosed) {
+        cursorClosed = true;
+        try {
+          cursor.close();
+        } catch {
+          // Cursor might already be closed, ignore
+        }
+      }
+    };
+
+    const { req, res } = params;
+    req.on('close', cleanupCursor);
+    res.on('close', cleanupCursor);
+
+    // Pipe cursor to transform stream
+    transactionStream = cursor.pipe(new TransformWithEventPipe({ objectMode: true, passThrough: true }));
+
+    transactionStream = transactionStream.eventPipe(populateEffects); // For old db entries
 
     if (params.args.tokenAddress) {
       const erc20Transform = new Erc20RelatedFilterTransform(params.args.tokenAddress);
@@ -607,85 +679,81 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
     address: string,
     tokenAddress: string,
     args: Partial<StreamWalletTransactionsArgs> = {}
-  ): Promise<Array<Partial<Transaction>>> {
+  ): Promise<Array<Partial<Web3Types.TransactionInfo>>> {
     const token = await this.erc20For(network, tokenAddress);
-    let windowSize = 100;
+    let windowSize = 100n;
     const { web3 } = await this.getWeb3(network);
     const tip = await web3.eth.getBlockNumber();
     
-    // If endBlock or startBlock is negative, it is a block offset from the tip
-    if (args.endBlock! < 0) {
-      args.endBlock = tip + Number(args.endBlock!);
-    }
-    if (args.startBlock! < 0) {
-      args.startBlock = tip + Number(args.startBlock!);
-    }
-
-    args.endBlock = Math.min(args.endBlock ?? tip, tip);
-    args.startBlock = Math.max(args.startBlock != null ? Number(args.startBlock) : args.endBlock - 10000, 0);
-    
     if (isNaN(args.startBlock!) || isNaN(args.endBlock!)) {
       throw new Error('startBlock and endBlock must be numbers');
-    } else if (args.endBlock < args.startBlock) {
+    }
+
+    let endBlock = args.endBlock == null ? null : BigInt(args.endBlock);
+    let startBlock = args.startBlock == null ? null : BigInt(args.startBlock);
+
+    // If endBlock or startBlock is negative, it is a block offset from the tip
+    if (endBlock! < 0n) {
+      endBlock = tip + endBlock!;
+    }
+    if (startBlock! < 0n) {
+      startBlock = tip + startBlock!;
+    }
+
+    endBlock = Utils.BI.min<bigint>([endBlock ?? tip, tip]) as bigint;
+    startBlock = Utils.BI.max<bigint>([startBlock != null ? startBlock : endBlock - 10000n, 0n]) as bigint;
+    
+    if (startBlock! > endBlock) {
       throw new Error('startBlock cannot be greater than endBlock');
-    } else if (args.endBlock - args.startBlock > 10000) {
+    } else if (endBlock - startBlock > 10000n) {
       throw new Error('Cannot scan more than 10000 blocks at a time. Please limit your search with startBlock and endBlock');
     }
 
-    windowSize = Math.min(windowSize, args.endBlock - args.startBlock);
-    let endBlock = args.endBlock;
-    const tokenTransfers: Partial<Transaction>[] = [];
-    while (windowSize > 0) {
+    windowSize = Utils.BI.min<bigint>([windowSize, endBlock - startBlock]);
+    const tokenTransfers: Partial<Web3Types.TransactionInfo>[] = [];
+    while (windowSize > 0n) {
       const [sent, received] = await Promise.all([
         token.getPastEvents('Transfer', {
           filter: { _from: address },
           fromBlock: endBlock - windowSize,
           toBlock: endBlock
-        }),
+        }) as Promise<Array<Web3Types.EventLog>>,
         token.getPastEvents('Transfer', {
           filter: { _to: address },
           fromBlock: endBlock - windowSize,
           toBlock: endBlock
-        })
+        }) as Promise<Array<Web3Types.EventLog>>
       ]);
       tokenTransfers.push(...this.convertTokenTransfers([...sent, ...received]));
-      endBlock -= windowSize + 1;
-      windowSize = Math.min(windowSize, endBlock - args.startBlock);
+      endBlock -= windowSize + 1n;
+      windowSize = Utils.BI.min<bigint>([windowSize, endBlock - startBlock]);
     }
     return tokenTransfers;
   }
 
-  convertTokenTransfers(tokenTransfers: Array<ERC20Transfer>) {
+  convertTokenTransfers(tokenTransfers: Array<Web3Types.EventLog>) {
     return tokenTransfers.map(this.convertTokenTransfer);
   }
 
-  convertTokenTransfer(transfer: ERC20Transfer) {
+  convertTokenTransfer(transfer: Web3Types.EventLog) {
     const { blockHash, blockNumber, transactionHash, returnValues, transactionIndex } = transfer;
     return {
       blockHash,
-      blockNumber,
+      blockNumber: Number(blockNumber),
       transactionHash,
-      transactionIndex,
+      transactionIndex: Number(transactionIndex),
       hash: transactionHash,
       from: returnValues['_from'],
       to: returnValues['_to'],
-      value: returnValues['_value']
-    } as Partial<Transaction>;
+      value: Number(returnValues['_value'])
+    } as Partial<Web3Types.TransactionInfo>;
   }
 
   @realtime
   async getAccountNonce(network: string, address: string) {
     const { web3 } = await this.getWeb3(network, { type: 'realtime' });
     const count = await web3.eth.getTransactionCount(address);
-    return count;
-    /*
-     *return EthTransactionStorage.collection.countDocuments({
-     *  chain: 'ETH',
-     *  network,
-     *  from: address,
-     *  blockHeight: { $gt: -1 }
-     *});
-     */
+    return Number(count);
   }
 
   async getWalletTokenTransactions(
@@ -695,86 +763,68 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
     args: StreamWalletTransactionsArgs
   ) {
     const addresses = await this.getWalletAddresses(walletId);
-    const allTokenQueries = Array<Promise<Array<Partial<Transaction>>>>();
-    for (const walletAddress of addresses) {
-      const transfers = this.getErc20Transfers(network, walletAddress.address, tokenAddress, args);
-      allTokenQueries.push(transfers);
-    }
-    const batches = await Promise.all(allTokenQueries);
-    const txs = batches.reduce((agg, batch) => agg.concat(batch));
-    return txs.sort((tx1, tx2) => tx1.blockNumber! - tx2.blockNumber!);
+    const batches = await Promise.all(addresses.map(walletAddress => this.getErc20Transfers(network, walletAddress.address, tokenAddress, args)));
+    return batches.flat().sort((tx1, tx2) => Number(BigInt(tx1.blockNumber!) - BigInt(tx2.blockNumber!)));
   }
 
   @realtime
   async estimateGas(params): Promise<number> {
-    return new Promise(async (resolve, reject) => {
-      try {
-        let { value } = params;
-        const { network, from, data, /* gasPrice */ to } = params;
-        const { web3 } = await this.getWeb3(network, { type: 'realtime' });
-        const dataDecoded = EVMTransactionStorage.abiDecode(data);
+    let { value } = params;
+    const { network, from, data, /* gasPrice */ to } = params;
+    const { web3 } = await this.getWeb3(network, { type: 'realtime' });
+    const dataDecoded = EVMTransactionStorage.abiDecode(data);
 
-        if (dataDecoded && dataDecoded.type === 'INVOICE' && dataDecoded.name === 'pay') {
-          value = dataDecoded.params[0].value;
-          // gasPrice = dataDecoded.params[1].value;
-        } else if (data && data.type === 'MULTISEND') {
-          try {
-            let method, gasLimit;
-            const contract = await this.getMultisendContract(network, to);
-            const addresses = web3.eth.abi.decodeParameter('address[]', data.addresses);
-            const amounts = web3.eth.abi.decodeParameter('uint256[]', data.amounts);
+    if (dataDecoded && dataDecoded.type === 'INVOICE' && dataDecoded.name === 'pay') {
+      value = dataDecoded.params[0].value;
+      // gasPrice = dataDecoded.params[1].value;
+    } else if (data && data.type === 'MULTISEND') {
+      let method, gasLimit;
+      const contract = await this.getMultisendContract(network, to);
+      const addresses = web3.eth.abi.decodeParameter('address[]', data.addresses);
+      const amounts = web3.eth.abi.decodeParameter('uint256[]', data.amounts);
 
-            switch (data.method) {
-              case 'sendErc20':
-                method = contract.methods.sendErc20(data.tokenAddress, addresses, amounts);
-                gasLimit = method ? await method.estimateGas({ from }) : undefined;
-                break;
-              case 'sendEth':
-                method = contract.methods.sendEth(addresses, amounts);
-                gasLimit = method ? await method.estimateGas({ from, value }) : undefined;
-                break;
-              default:
-                break;
-            }
-            return resolve(Number(gasLimit));
-          } catch (err) {
-            return reject(err);
-          }
-        }
-
-        let _value;
-        if (data) {
-          // Gas estimation might fail with `insufficient funds` if value is higher than balance for a normal send.
-          // We want this method to give a blind fee estimation, though, so we should not include the value
-          // unless it's needed for estimating smart contract execution.
-          _value = web3.utils.toHex(value);
-        }
-
-        const opts = {
-          method: 'eth_estimateGas',
-          params: [
-            {
-              data,
-              to: to && to.toLowerCase(),
-              from: from && from.toLowerCase(),
-              // gasPrice: web3.utils.toHex(gasPrice), // Setting this lower than the baseFee of the last block will cause an error. Better to just leave it out.
-              value: _value
-            }
-          ],
-          jsonrpc: '2.0',
-          id: 'bitcore-' + Date.now()
-        };
-
-        const provider = web3.currentProvider as any;
-        provider.send(opts, (err, data) => {
-          if (err) return reject(err);
-          if (!data.result) return reject(data.error || data);
-          return resolve(Number(data.result));
-        });
-      } catch (err) {
-        return reject(err);
+      switch (data.method) {
+        case 'sendErc20':
+          method = contract.methods.sendErc20(data.tokenAddress, addresses, amounts);
+          gasLimit = method ? await method.estimateGas({ from }) : undefined;
+          break;
+        case 'sendEth':
+          method = contract.methods.sendEth(addresses, amounts);
+          gasLimit = method ? await method.estimateGas({ from, value }) : undefined;
+          break;
+        default:
+          break;
       }
-    });
+      return Number(gasLimit);
+    }
+
+    let _value;
+    if (data) {
+      // Gas estimation might fail with `insufficient funds` if value is higher than balance for a normal send.
+      // We want this method to give a blind fee estimation, though, so we should not include the value
+      // unless it's needed for estimating smart contract execution.
+      _value = Utils.toHex(value);
+    }
+
+    const opts = {
+      method: 'eth_estimateGas',
+      params: [
+        {
+          data,
+          to: to && to.toLowerCase(),
+          from: from && from.toLowerCase(),
+          // gasPrice: Utils.toHex(gasPrice), // Setting this lower than the baseFee of the last block will cause an error. Better to just leave it out.
+          value: _value
+        }
+      ],
+      jsonrpc: '2.0',
+      id: 'bitcore-' + Date.now()
+    } as const;
+
+    const provider = web3.currentProvider;
+    const response = await provider!.request(opts);
+    if (!response.result) throw new Error(JSON.stringify(response.error || response));
+    return Number(response.result);
   }
 
 
@@ -897,7 +947,7 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
         throw new Error('invalid block id provided');
       }
       const { web3 } = await this.getWeb3(network);
-      const tipHeight = await web3.eth.getBlockNumber();
+      const tipHeight = Number(await web3.eth.getBlockNumber());
       if (tipHeight < height) {
         return [];
       }
@@ -909,7 +959,7 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
       if (!blk || blk.number == null) {
         throw new Error(`Could not get block ${blockId}`);
       }
-      height = blk.number;
+      height = Number(blk.number);
     }
 
     if (height != null) {
@@ -920,7 +970,7 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
     if (query.startBlock == null || query.endBlock == null) {
       // Calaculate range with options
       const { web3 } = await this.getWeb3(network);
-      const tipHeight = await web3.eth.getBlockNumber();
+      const tipHeight = Number(await web3.eth.getBlockNumber());
       query.endBlock = query.endBlock ?? tipHeight;
       query.startBlock = query.startBlock ?? query.endBlock - limit;
     }
@@ -937,7 +987,15 @@ export class BaseEVMStateProvider extends InternalStateProvider implements IChai
     return r;
   }
 
-  async _getBlockNumberByDate(params) {
+  async _getBlockNumberByDate(params: {
+    date: Date;
+    network?: string;
+    /**
+     * Unused in this method, but is used in the overriding methods of subclasses (e.g. Moralis' CSP).
+     * Removing it from this method's signature causes TS errors in methods above that pass in chainId when inherited by subclasses.
+     */
+    chainId?: string | bigint;
+  }) {
     const { date, network } = params;
     const block = await EVMBlockStorage.collection.findOne({ chain: this.chain, network, timeNormalized: { $gte: date } }, { sort: { timeNormalized: 1 } });
     return block?.height;

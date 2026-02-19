@@ -1,9 +1,9 @@
 import { expect } from 'chai';
 import { ethers } from 'ethers';
-import bitcoreLib from 'bitcore-lib';
-import bitcoreLibCash from 'bitcore-lib-cash';
-import bitcoreLibDoge from 'bitcore-lib-doge';
-import bitcoreLibLtc from 'bitcore-lib-ltc';
+import bitcoreLib from '@bitpay-labs/bitcore-lib';
+import bitcoreLibCash from '@bitpay-labs/bitcore-lib-cash';
+import bitcoreLibDoge from '@bitpay-labs/bitcore-lib-doge';
+import bitcoreLibLtc from '@bitpay-labs/bitcore-lib-ltc';
 import { Transactions } from '../src';
 
 describe('Transaction', function() {
@@ -1749,5 +1749,29 @@ describe('Transaction', function() {
       const regtestId = Transactions.get({ chain: 'MATIC' }).getChainId('regtest');
       expect(regtestId).to.equal(13375);
     });
+  });
+
+  describe('ETH _toHex', function() {
+    it('should convert number to hex string', function() {
+      const ETHTxProvider = Transactions.get({ chain: 'ETH' });
+      const result = ETHTxProvider._toHex(200000);
+      expect(result).to.equal('0x30d40');
+    });
+    it('should convert number string to hex string', function() {
+      const ETHTxProvider = Transactions.get({ chain: 'ETH' });
+      const result = ETHTxProvider._toHex('200000');
+      expect(result).to.equal('0x30d40');
+    });
+    it('should convert bigint to hex string', function() {
+      const ETHTxProvider = Transactions.get({ chain: 'ETH' });
+      const result = ETHTxProvider._toHex(200000n);
+      expect(result).to.equal('0x30d40');
+    });
+    it('should leave 0x-prefix hex string unchanged', function() {
+      const ETHTxProvider = Transactions.get({ chain: 'ETH' });
+      const result = ETHTxProvider._toHex('0x200000');
+      expect(result).to.equal('0x200000');
+    });
+
   });
 });

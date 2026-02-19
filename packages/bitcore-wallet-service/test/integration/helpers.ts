@@ -4,7 +4,7 @@ import { setDefaultResultOrder } from 'dns';
 
 setDefaultResultOrder('ipv4first');
 
-import chai from 'chai';
+import * as chai from 'chai';
 import sinon from 'sinon';
 import log from 'npmlog';
 
@@ -16,7 +16,7 @@ import {
   BitcoreLibDoge,
   BitcoreLibLtc,
   Transactions
-} from 'crypto-wallet-core';
+} from '@bitpay-labs/crypto-wallet-core';
 import util from 'util';
 import { ChainService } from '../../src/lib/chain/index';
 import { Common } from '../../src/lib/common';

@@ -1,6 +1,6 @@
 'use strict';
 
-import chai from 'chai';
+import * as chai from 'chai';
 import 'chai/register-should';
 
 chai.config.includeStack = true;
@@ -9,8 +9,8 @@ import async from 'async';
 import * as Uuid from 'uuid';
 import log from '../src/lib/log';
 import oldCredentials from './data/legacyCredentialsExports';
-import * as CWC from 'crypto-wallet-core';
-import BWS from 'bitcore-wallet-service';
+import * as CWC from '@bitpay-labs/crypto-wallet-core';
+import BWS from '@bitpay-labs/bitcore-wallet-service';
 import Client, { Credentials } from '../src';
 import { Request } from '../src/lib/request';
 import { Utils } from '../src/lib/common';

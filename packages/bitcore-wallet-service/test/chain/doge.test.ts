@@ -1,7 +1,7 @@
 'use strict';
 
-import chai from 'chai';
-import { BitcoreLibDoge } from 'crypto-wallet-core';
+import * as chai from 'chai';
+import { BitcoreLibDoge } from '@bitpay-labs/crypto-wallet-core';
 import { ChainService } from '../../src/lib/chain';
 import { DogeChain } from '../../src/lib/chain/doge';
 import { ITxProposal, TxProposal } from '../../src/lib/model/txproposal';
