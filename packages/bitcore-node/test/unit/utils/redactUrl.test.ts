@@ -8,10 +8,11 @@ describe('redactUrl', () => {
     expect(redactUrl(url)).to.include('REDACTED');
   });
 
-  it('should redact Alchemy v3 API key from URL', () => {
+  it('should redact Alchemy v3 API key from URL and preserve version', () => {
     const url = 'https://eth-mainnet.g.alchemy.com/v3/abc123def456';
-    expect(redactUrl(url)).to.not.include('abc123def456');
-    expect(redactUrl(url)).to.include('REDACTED');
+    const redacted = redactUrl(url);
+    expect(redacted).to.not.include('abc123def456');
+    expect(redacted).to.include('/v3/***REDACTED***');
   });
 
   it('should redact apikey query parameter', () => {

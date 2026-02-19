@@ -119,7 +119,7 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
         throw err;
       }
       // All other errors: log and return undefined (preserve base class behavior)
-      console.error(err);
+      logger.error('MultiProvider: unexpected error in getTransaction: %o', err);
       return undefined;
     }
   }
@@ -197,7 +197,10 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
       continue;
     }
 
-    // If at least one provider had a breaker error (not just "not found"), signal 503
+    // If at least one provider had a breaker error (not just "not found"), signal 503.
+    // Note: If Provider A returns undefined (not found) and Provider B has a breaker error,
+    // this returns 503 rather than 404. This is intentional -- better to signal degraded
+    // service than risk a false "not found" when some providers are unavailable.
     if (hadBreakerError || !attemptedAny) {
       throw new AllProvidersUnavailableError('getTransaction', chain, network);
     }
