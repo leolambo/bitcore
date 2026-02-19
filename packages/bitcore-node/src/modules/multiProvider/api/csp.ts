@@ -342,7 +342,7 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
    * If the stream emits error or times out, returns { success: false, error }.
    * If the stream ends immediately (empty result), returns { success: true, firstItem: null }.
    */
-  _preflightStream(stream: ExternalApiStream, timeoutMs: number): Promise<{
+  private _preflightStream(stream: ExternalApiStream, timeoutMs: number): Promise<{
     success: boolean;
     firstItem?: any;
     error?: Error;
@@ -531,10 +531,9 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
   // @override - getBlockBeforeTime uses indexed API providers for date->block resolution
   // This override is REQUIRED because InternalStateProvider.getBlockBeforeTime uses Bitcoin
   // collections and is incorrect for EVM external mode. MoralisStateProvider also overrides this.
-  async getBlockBeforeTime(params: any) {
-    // Support both { chain, network, time } (base class) and { query: { chain, network, time } }
-    const { network, time } = params.query || params;
-    const date = new Date(time || Date.now());
+  async getBlockBeforeTime(params: { query: { chain: string; network: string; time: string } }) {
+    const { chain, network, time } = params.query;
+    const date = new Date(time);
     const chainId = await this.getChainId({ network });
     const blockNum = await this._getBlockNumberByDate({ date, chainId, network });
     // Use RPC to fetch the actual block data (inherited from BaseEVMStateProvider)

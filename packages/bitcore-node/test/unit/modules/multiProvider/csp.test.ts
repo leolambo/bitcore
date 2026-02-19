@@ -762,7 +762,7 @@ describe('MultiProviderEVMStateProvider', function() {
 
       setTimeout(() => stream.write({ txid: '0xtx1' }), 10);
 
-      const result = await provider._preflightStream(stream, 5000);
+      const result = await (provider as any)._preflightStream(stream, 5000);
       expect(result.success).to.be.true;
       expect(result.firstItem).to.deep.equal({ txid: '0xtx1' });
     });
@@ -774,7 +774,7 @@ describe('MultiProviderEVMStateProvider', function() {
 
       setTimeout(() => stream.end(), 10);
 
-      const result = await provider._preflightStream(stream, 5000);
+      const result = await (provider as any)._preflightStream(stream, 5000);
       expect(result.success).to.be.true;
       expect(result.firstItem).to.be.null;
     });
@@ -786,7 +786,7 @@ describe('MultiProviderEVMStateProvider', function() {
 
       setTimeout(() => stream.emit('error', new UpstreamError('test', 500)), 10);
 
-      const result = await provider._preflightStream(stream, 5000);
+      const result = await (provider as any)._preflightStream(stream, 5000);
       expect(result.success).to.be.false;
       expect(result.error).to.be.instanceOf(UpstreamError);
     });
@@ -797,7 +797,7 @@ describe('MultiProviderEVMStateProvider', function() {
       stream.headers = {};
 
       // Don't emit anything - let it timeout
-      const result = await provider._preflightStream(stream, 50);
+      const result = await (provider as any)._preflightStream(stream, 50);
       expect(result.success).to.be.false;
       expect(result.error).to.be.instanceOf(TimeoutError);
     });

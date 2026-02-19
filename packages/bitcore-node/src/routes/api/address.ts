@@ -1,6 +1,7 @@
 import express, { Request } from 'express';
 import logger from '../../logger';
 import { ChainStateProvider } from '../../providers/chain-state';
+import { AllProvidersUnavailableError, InvalidRequestError } from '../../providers/chain-state/external/adapters/errors';
 import { StreamAddressUtxosParams } from '../../types/namespaces/ChainStateProvider';
 
 const router = express.Router({ mergeParams: true });
@@ -19,6 +20,12 @@ async function streamCoins(req: Request, res) {
     } as StreamAddressUtxosParams;
     await ChainStateProvider.streamAddressTransactions(payload);
   } catch (err: any) {
+    if (err instanceof AllProvidersUnavailableError) {
+      return res.status(503).json({ error: 'All indexed API providers unavailable', message: err.message });
+    }
+    if (err instanceof InvalidRequestError) {
+      return res.status(400).json({ error: 'Invalid request', message: err.message });
+    }
     logger.error('Error streaming coins: %o', err.stack || err.message || err);
     return res.status(500).send(err.message || err);
   }
