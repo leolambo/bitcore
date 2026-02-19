@@ -2,6 +2,7 @@ import { Readable, Stream, Transform } from 'stream';
 import axios from 'axios';
 import { Request, Response } from 'express';
 import { ReadableWithEventPipe, TransformWithEventPipe } from '../../../../utils/streamWithEventPipe';
+import { redactUrl } from '../utils/redactUrl';
 
 
 export interface StreamOpts {
@@ -106,7 +107,7 @@ export class ExternalApiStream extends ReadableWithEventPipe {
           closed = true;
           if (err.isAxiosError) {
             err.log = {
-              url: err?.config?.url,
+              url: err?.config?.url ? redactUrl(err.config.url) : undefined,
               statusCode: err?.response?.status,
               statusMsg: err?.response?.statusText,
               data: err?.response?.data,
