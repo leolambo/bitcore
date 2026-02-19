@@ -4,9 +4,7 @@ import axios from 'axios';
 import path from 'path';
 import { ExternalApiStream } from '../../../src/providers/chain-state/external/streams/apiStream';
 import {
-  AdapterError,
   InvalidRequestError,
-  NotFoundError,
   AuthError,
   RateLimitError,
   TimeoutError,
