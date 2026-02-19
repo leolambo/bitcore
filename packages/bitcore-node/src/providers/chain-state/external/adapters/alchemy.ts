@@ -6,8 +6,7 @@ import { IEVMTransactionTransformed } from '../../evm/types';
 import { EVMTransactionStorage } from '../../evm/models/transaction';
 import { ExternalApiStream } from '../streams/apiStream';
 import { Web3 } from '@bitpay-labs/crypto-wallet-core';
-import { AdapterError, NotFoundError, AuthError, RateLimitError, TimeoutError, UpstreamError, InvalidRequestError } from './errors';
-import logger from '../../../../logger';
+import { AdapterError, AuthError, RateLimitError, TimeoutError, UpstreamError, InvalidRequestError } from './errors';
 
 interface AlchemyConfig {
   apiKey: string;
