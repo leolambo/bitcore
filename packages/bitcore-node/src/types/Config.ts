@@ -1,4 +1,5 @@
 import { FeeMode } from './namespaces/ChainStateProvider';
+import { CircuitBreakerConfig } from '../providers/chain-state/external/circuitBreaker';
 
 export interface IChainConfig<T extends INetworkConfig> {
   [network: string]: T;
@@ -46,16 +47,29 @@ export type IExternalSyncConfig<T> = {
   syncIntervalSecs?: number; // Interval in seconds to check for new blocks
 } & T;
 
+export interface IProviderConfig {
+  name: string;             // 'moralis' | 'alchemy'
+  priority: number;         // Lower = higher priority (1 = primary)
+  config: {
+    apiKey: string;
+    network?: string;       // Provider-specific network identifier
+    requestTimeout?: number; // ms, default 30000 - timeout for individual API requests
+    [key: string]: any;     // Additional provider-specific config
+  };
+  circuitBreakerConfig?: Partial<CircuitBreakerConfig>;
+}
+
 export interface IEVMNetworkConfig extends INetworkConfig {
   client?: 'geth' | 'erigon'; // Note: Erigon support is not actively maintained
-  providers?: IProvider[]; // Multiple providers can be configured to load balance for the syncing threads
-  provider?: IProvider;
+  providers?: IProvider[]; // Multiple RPC providers - already supports multi-provider
+  provider?: IProvider; // Primary RPC provider
   gnosisFactory?: string; // Address of the gnosis multisig contract
   publicWeb3?: boolean; // Allow web3 rpc to be open via bitcore-node API endpoint
   threads?: number; // Defaults to your CPU's capabilities. Currently only available for EVM chains
   mtSyncTipPad?: number; // Default: 100. Multi-threaded sync will sync up to latest block height minus mtSyncTipPad. MT syncing is blind to reorgs. This helps ensure reorgs are accounted for near the tip.
   leanTransactionStorage?: boolean; // Removes data, abiType, internal and calls before saving a transaction to the databases
   needsL1Fee?: boolean; // Does this chain require a layer-1 fee to be added to a transaction (e.g. OP-stack chains)?
+  externalProviders?: IProviderConfig[];
 }
 
 export interface IXrpNetworkConfig extends INetworkConfig {

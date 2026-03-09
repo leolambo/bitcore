@@ -4,6 +4,7 @@ import logger from '../../logger';
 import { CoinStorage, ICoin } from '../../models/coin';
 import { TransactionStorage } from '../../models/transaction';
 import { ChainStateProvider } from '../../providers/chain-state';
+import { AllProvidersUnavailableError, InvalidRequestError } from '../../providers/chain-state/external/adapters/errors';
 import { isDateValid } from '../../utils';
 import { CacheTimes, Confirmations, SetCache } from '../middleware';
 
@@ -150,6 +151,12 @@ router.get('/before-time/:time', async function(req: Request, res: Response) {
     }
     return res.json(block);
   } catch (err: any) {
+    if (err instanceof AllProvidersUnavailableError) {
+      return res.status(503).json({ error: 'All indexed API providers unavailable', message: err.message });
+    }
+    if (err instanceof InvalidRequestError) {
+      return res.status(400).json({ error: 'Invalid request', message: err.message });
+    }
     logger.error('Error getting blocks before time: %o', err.stack || err.message || err);
     return res.status(500).send(err.message || err);
   }

@@ -3,6 +3,7 @@ import logger from '../../logger';
 import { ICoin } from '../../models/coin';
 import { ITransaction } from '../../models/transaction';
 import { ChainStateProvider } from '../../providers/chain-state';
+import { AllProvidersUnavailableError, InvalidRequestError } from '../../providers/chain-state/external/adapters/errors';
 import { StreamTransactionsParams } from '../../types/namespaces/ChainStateProvider';
 import { SetCache } from '../middleware';
 import { CacheTimes } from '../middleware';
@@ -66,6 +67,12 @@ router.get('/:txId', async (req: Request, res: Response) => {
       return res.send(tx);
     }
   } catch (err: any) {
+    if (err instanceof AllProvidersUnavailableError) {
+      return res.status(503).json({ error: 'All indexed API providers unavailable', message: err.message });
+    }
+    if (err instanceof InvalidRequestError) {
+      return res.status(400).json({ error: 'Invalid request', message: err.message });
+    }
     logger.error('Error getting transaction: %o', err.stack || err.message || err);
     return res.status(500).send(err.message || err);
   }

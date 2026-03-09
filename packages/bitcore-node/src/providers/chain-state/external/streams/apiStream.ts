@@ -2,12 +2,19 @@ import { Readable, Stream, Transform } from 'stream';
 import axios from 'axios';
 import { Request, Response } from 'express';
 import { ReadableWithEventPipe, TransformWithEventPipe } from '../../../../utils/streamWithEventPipe';
+import { redactUrl } from '../utils/redactUrl';
 
 
 export interface StreamOpts {
   jsonl?: boolean;
 }
 
+/**
+ * Reference doc: Section "Stream Improvements"
+ * Handles cursor-based pagination for external APIs.
+ * For multi-provider: adapters return streams, this handles pagination internally.
+ * Transform function converts provider format → internal format (see reference doc IEVMTransactionInProcess).
+ */
 export class ExternalApiStream extends ReadableWithEventPipe {
   url: string;
   headers: any;
@@ -73,6 +80,12 @@ export class ExternalApiStream extends ReadableWithEventPipe {
     }
   }
 
+  /**
+   * Reference doc: Section "Stream Improvements - Architectural Change"
+   * Current pattern: CSP calls onStream with req/res (HTTP-coupled).
+   * Target pattern: CSP returns stream, route layer calls onStream (decoupled).
+   * This allows testing CSP without Express mocks and reusing streams for non-HTTP uses.
+   */
   // handles events emitted by the streamed response, request from client, and response to client
   static onStream(stream: Readable, req: Request, res: Response, opts: StreamOpts = {}):
   Promise<{ success: boolean; error?: any }> {
@@ -94,7 +107,7 @@ export class ExternalApiStream extends ReadableWithEventPipe {
           closed = true;
           if (err.isAxiosError) {
             err.log = {
-              url: err?.config?.url,
+              url: err?.config?.url ? redactUrl(err.config.url) : undefined,
               statusCode: err?.response?.status,
               statusMsg: err?.response?.statusText,
               data: err?.response?.data,
