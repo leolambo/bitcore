@@ -483,3 +483,51 @@ describe('MultiProviderEVMStateProvider: streamBlocks and _getBlocks', function(
     expect(out[2].nextBlockHash).to.equal('0xd');
   });
 });
+
+describe('MultiProviderEVMStateProvider: _buildWalletTransactionsStream tokenAddress routing', function() {
+  let cfgStub: sinon.SinonStub;
+  before(function() {
+    cfgStub = sinon.stub(Config, 'get').returns({ chains: { ETH: {} } } as any);
+    (BaseEVMStateProvider as any).rpcInitialized = { ETH: true };
+  });
+  after(function() { cfgStub.restore(); });
+
+  function buildProviderWithFakeAdapter() {
+    const provider = new MultiProviderEVMStateProvider('ETH');
+    const fakeStream = { eventPipe: (s: any) => s };
+    const adapter = {
+      name: 'fake',
+      streamAddressTransactions: sinon.stub().returns(fakeStream),
+      streamERC20Transfers: sinon.stub().returns(fakeStream)
+    };
+    const fakeProvider = { adapter, health: { isAvailable: () => true, recordFailure: sinon.stub() }, priority: 1 };
+    (provider as any).providersByNetwork = new Map([['mainnet', [fakeProvider]]]);
+    (provider as any).getChainId = async () => 1n;
+    // Minimal stub for WalletAddressStorage.updateLastQueryTime
+    (provider as any).updateLastQueryTime = async () => {};
+    return { provider, adapter };
+  }
+
+  it('routes to streamERC20Transfers when args.tokenAddress is set', async function() {
+    const { provider, adapter } = buildProviderWithFakeAdapter();
+    const transactionStream: any = { eventPipe: (s: any) => s };
+    await (provider as any)._buildWalletTransactionsStream(
+      { network: 'mainnet', args: { tokenAddress: '0xtoken' } },
+      { transactionStream, walletAddresses: ['0xaddr1', '0xaddr2'] }
+    );
+    expect(adapter.streamERC20Transfers.callCount).to.equal(2);
+    expect(adapter.streamAddressTransactions.callCount).to.equal(0);
+    expect(adapter.streamERC20Transfers.firstCall.args[0].tokenAddress).to.equal('0xtoken');
+  });
+
+  it('routes to streamAddressTransactions when no tokenAddress is set', async function() {
+    const { provider, adapter } = buildProviderWithFakeAdapter();
+    const transactionStream: any = { eventPipe: (s: any) => s };
+    await (provider as any)._buildWalletTransactionsStream(
+      { network: 'mainnet', args: {} },
+      { transactionStream, walletAddresses: ['0xaddr1'] }
+    );
+    expect(adapter.streamAddressTransactions.callCount).to.equal(1);
+    expect(adapter.streamERC20Transfers.callCount).to.equal(0);
+  });
+});

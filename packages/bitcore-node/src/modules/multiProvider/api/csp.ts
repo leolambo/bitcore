@@ -345,22 +345,33 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
     const { walletAddresses } = streamParams;
     const chainId = await this.getChainId({ network });
     const providers = this.getProvidersForNetwork(network);
+    const tokenAddress = (args as any)?.tokenAddress;
 
     let activeProvider = providers.find(p => p.health.isAvailable());
     if (!activeProvider) {
       throw new AllProvidersUnavailableError('walletTransactions', this.chain, network);
     }
-    logger.debug(`MultiProvider: wallet stream using ${activeProvider.adapter.name} for ${this.chain}:${network} (${walletAddresses.length} addresses)`);
+    logger.debug(`MultiProvider: wallet stream using ${activeProvider.adapter.name} for ${this.chain}:${network} (${walletAddresses.length} addresses)${tokenAddress ? ` token=${tokenAddress}` : ''}`);
 
     for (const address of walletAddresses) {
       try {
-        const txStream = activeProvider.adapter.streamAddressTransactions({
-          chainId,
-          chain: this.chain,
-          network,
-          address,
-          args: { order: 'ASC', ...args } as any
-        });
+        const streamArgs = { order: 'ASC', ...args } as any;
+        const txStream = tokenAddress
+          ? activeProvider.adapter.streamERC20Transfers({
+            chainId,
+            chain: this.chain,
+            network,
+            address,
+            tokenAddress,
+            args: streamArgs
+          })
+          : activeProvider.adapter.streamAddressTransactions({
+            chainId,
+            chain: this.chain,
+            network,
+            address,
+            args: streamArgs
+          });
 
         transactionStream = txStream.eventPipe(transactionStream);
 
