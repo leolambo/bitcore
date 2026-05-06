@@ -230,26 +230,80 @@ describe('AlchemyAdapter', function() {
 
   // --- getBlockNumberByDate ---
   describe('getBlockNumberByDate', function() {
-    it('should binary search for block closest to target date', async function() {
-      axiosPostStub.callsFake(async (_url: string, body: any) => {
-        if (body.method === 'eth_blockNumber') return rpcOk('0x64');
-        if (body.method === 'eth_getBlockByNumber') {
-          const num = parseInt(body.params[0], 16);
-          return rpcOk({ timestamp: `0x${num.toString(16)}`, number: body.params[0] });
-        }
-        return rpcOk(null);
-      });
+    function uniformChainStub(latestNumber: number, blockTimeSec: number) {
+      return async (_url: string, body: any) => {
+        if (body.method !== 'eth_getBlockByNumber') return rpcOk(null);
+        const tag = body.params[0];
+        const num = tag === 'latest' ? latestNumber : parseInt(tag, 16);
+        return rpcOk({ number: `0x${num.toString(16)}`, timestamp: `0x${(num * blockTimeSec).toString(16)}` });
+      };
+    }
 
-      const result = await adapter.getBlockNumberByDate({ chain: 'ETH', network: 'mainnet', chainId: '1', date: new Date(50000) });
+    it('returns a candidate block for a target date', async function() {
+      axiosPostStub.callsFake(uniformChainStub(100, 1));
+      const result = await adapter.getBlockNumberByDate({
+        chain: 'ETH', network: 'mainnet', chainId: '1', date: new Date(50_000)
+      });
       expect(result).to.equal(50);
     });
 
-    it('should return latest block if target is in the future', async function() {
-      axiosPostStub.onCall(0).resolves(rpcOk('0x64'));
-      axiosPostStub.onCall(1).resolves(rpcOk({ timestamp: '0x64', number: '0x64' }));
-
-      const result = await adapter.getBlockNumberByDate({ chain: 'ETH', network: 'mainnet', chainId: '1', date: new Date(200000) });
+    it('returns latest block when target is in the future', async function() {
+      axiosPostStub.callsFake(uniformChainStub(100, 1));
+      const result = await adapter.getBlockNumberByDate({
+        chain: 'ETH', network: 'mainnet', chainId: '1', date: new Date(200_000)
+      });
       expect(result).to.equal(100);
+    });
+
+    it('throws AdapterError(INVALID_REQUEST) for invalid date without making any RPC call', async function() {
+      try {
+        await adapter.getBlockNumberByDate({
+          chain: 'ETH', network: 'mainnet', chainId: '1', date: new Date('not-a-date')
+        });
+        throw new Error('should have thrown');
+      } catch (e: any) {
+        expect(e).to.be.instanceOf(AdapterError);
+        expect(e.code).to.equal(AdapterErrorCode.INVALID_REQUEST);
+      }
+      expect(axiosPostStub.callCount).to.equal(0);
+    });
+
+    it('does not call eth_blockNumber; uses eth_getBlockByNumber("latest") instead', async function() {
+      axiosPostStub.callsFake(uniformChainStub(100, 1));
+      await adapter.getBlockNumberByDate({
+        chain: 'ETH', network: 'mainnet', chainId: '1', date: new Date(50_000)
+      });
+      const methodsCalled = axiosPostStub.getCalls().map((c: any) => c.args[1].method);
+      expect(methodsCalled.every((m: string) => m === 'eth_getBlockByNumber')).to.equal(true);
+    });
+
+    it('reuses cache across sequential lookups (fewer RPCs on second call)', async function() {
+      axiosPostStub.callsFake(uniformChainStub(100, 1));
+      await adapter.getBlockNumberByDate({
+        chain: 'ETH', network: 'mainnet', chainId: '1', date: new Date(50_000)
+      });
+      const callsAfterFirst = axiosPostStub.callCount;
+      await adapter.getBlockNumberByDate({
+        chain: 'ETH', network: 'mainnet', chainId: '1', date: new Date(50_000)
+      });
+      const secondCallDelta = axiosPostStub.callCount - callsAfterFirst;
+      expect(secondCallDelta).to.be.lessThan(callsAfterFirst);
+    });
+
+    it('maps malformed RPC body to AdapterError(UPSTREAM)', async function() {
+      axiosPostStub.callsFake(async (_url: string, body: any) => {
+        if (body.method !== 'eth_getBlockByNumber') return rpcOk(null);
+        return rpcOk({ number: 'not-a-hex', timestamp: '0x0' });
+      });
+      try {
+        await adapter.getBlockNumberByDate({
+          chain: 'ETH', network: 'mainnet', chainId: '1', date: new Date(50_000)
+        });
+        throw new Error('should have thrown');
+      } catch (e: any) {
+        expect(e).to.be.instanceOf(AdapterError);
+        expect(e.code).to.equal(AdapterErrorCode.UPSTREAM);
+      }
     });
   });
 

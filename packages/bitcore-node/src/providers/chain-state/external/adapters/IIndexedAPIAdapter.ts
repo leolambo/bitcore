@@ -27,7 +27,11 @@ export interface IIndexedAPIAdapter {
   streamERC20Transfers(params: AdapterStreamParams & { tokenAddress: string }): ExternalApiStream;
 
   /**
-   * Get block number closest to the given date.
+   * Get a candidate block number for a date. The caller must verify exact
+   * floor semantics; adapters are not authoritative for before-genesis or
+   * near-tip canonicality. Multiprovider verification converts the candidate
+   * to an exact floor or null. Must throw AdapterError on failure;
+   * never returns null.
    */
   getBlockNumberByDate(params: AdapterBlockByDateParams): Promise<number>;
 

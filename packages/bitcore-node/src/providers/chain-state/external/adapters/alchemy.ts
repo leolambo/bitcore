@@ -5,6 +5,14 @@ import logger from '../../../../logger';
 import { EVMTransactionStorage } from '../../evm/models/transaction';
 import { ExternalApiStream } from '../streams/apiStream';
 import {
+  BlockByDateError,
+  type BlockByDateProviderState,
+  type BlockHeader,
+  type BlockHeaderSource,
+  createBlockByDateProviderState,
+  findBlockCandidateByTimestamp
+} from '../utils/blockByDate';
+import {
   type AdapterBlockByDateParams,
   type AdapterStreamParams,
   type AdapterTransactionParams,
@@ -26,6 +34,7 @@ export class AlchemyAdapter implements IIndexedAPIAdapter {
 
   private apiKey: string;
   private requestTimeout: number;
+  private blockByDateState = new Map<string, BlockByDateProviderState>();
 
   constructor(providerConfig: IMultiProviderConfig) {
     const apiKey = config.externalProviders?.alchemy?.apiKey;
@@ -111,35 +120,51 @@ export class AlchemyAdapter implements IIndexedAPIAdapter {
 
   async getBlockNumberByDate(params: AdapterBlockByDateParams): Promise<number> {
     const { chain, network, date } = params;
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      throw new AdapterError(this.name, AdapterErrorCode.INVALID_REQUEST, 'invalid date');
+    }
     const url = this.getBaseUrl(chain, network);
-    const targetTimestamp = Math.floor(new Date(date).getTime() / 1000);
-
-    const MAX_ITERATIONS = 64;
-    const latestBlockResp = await this._jsonRpc(url, 'eth_blockNumber', []);
-    let high = parseInt(latestBlockResp.result, 16);
-    let low = 0;
-
-    const latestBlock = await this._jsonRpc(url, 'eth_getBlockByNumber', [latestBlockResp.result, false]);
-    const latestTimestamp = parseInt(latestBlock.result.timestamp, 16);
-    if (targetTimestamp >= latestTimestamp) return high; // Target in the future
-    if (targetTimestamp <= 0) return 0; // Target before genesis
-
-    // Binary search: largest block with timestamp <= target
-    let iterations = 0;
-    while (low < high && iterations < MAX_ITERATIONS) {
-      const mid = Math.floor((low + high + 1) / 2);
-      const blockResp = await this._jsonRpc(url, 'eth_getBlockByNumber', [`0x${mid.toString(16)}`, false]);
-      const blockTimestamp = parseInt(blockResp.result.timestamp, 16);
-
-      if (blockTimestamp <= targetTimestamp) {
-        low = mid;
-      } else {
-        high = mid - 1;
-      }
-      iterations++;
+    const key = `${chain}:${network}`;
+    let state = this.blockByDateState.get(key);
+    if (!state) {
+      state = createBlockByDateProviderState();
+      this.blockByDateState.set(key, state);
     }
 
-    return low;
+    const source: BlockHeaderSource = {
+      getBlockHeader: async (tag): Promise<BlockHeader> => {
+        const param = tag === 'latest' ? 'latest' : `0x${tag.toString(16)}`;
+        const r = await this._jsonRpc(url, 'eth_getBlockByNumber', [param, false]);
+        const result = r?.result;
+        if (!result) {
+          throw new BlockByDateError('MALFORMED_HEADER', 'null result');
+        }
+        const num = parseInt(result.number, 16);
+        const ts = parseInt(result.timestamp, 16);
+        if (!Number.isSafeInteger(num) || num < 0 || !Number.isSafeInteger(ts) || ts < 0) {
+          throw new BlockByDateError('MALFORMED_HEADER', 'invalid number/timestamp');
+        }
+        if (typeof tag === 'number' && num !== tag) {
+          throw new BlockByDateError('MALFORMED_HEADER', `tag/number mismatch ${tag}!=${num}`);
+        }
+        return { number: num, timestampSec: ts };
+      }
+    };
+
+    try {
+      const { candidateBlock } = await findBlockCandidateByTimestamp(
+        source,
+        Math.floor(date.getTime() / 1000),
+        { state }
+      );
+      return candidateBlock;
+    } catch (e) {
+      if (e instanceof BlockByDateError) {
+        const code = e.code === 'INVALID_INPUT' ? AdapterErrorCode.INVALID_REQUEST : AdapterErrorCode.UPSTREAM;
+        throw new AdapterError(this.name, code, e.message);
+      }
+      throw e;
+    }
   }
 
   async healthCheck(): Promise<boolean> {

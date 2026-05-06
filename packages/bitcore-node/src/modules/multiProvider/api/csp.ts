@@ -194,16 +194,26 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
     // Convert date ranges to block ranges (Alchemy only supports fromBlock/toBlock)
     const resolvedArgs = { ...args };
     if (args.startDate && !args.startBlock) {
-      resolvedArgs.startBlock = await this._getBlockNumberByDate({
+      const n = await this._getBlockNumberByDate({
         date: new Date(args.startDate), chain: this.chain, chainId, network
       });
+      // startDate before genesis: clamp to 0 (no lower bound)
+      resolvedArgs.startBlock = n ?? 0;
       delete resolvedArgs.startDate;
     }
     if (args.endDate && !args.endBlock) {
-      resolvedArgs.endBlock = await this._getBlockNumberByDate({
+      const n = await this._getBlockNumberByDate({
         date: new Date(args.endDate), chain: this.chain, chainId, network
       });
+      if (n == null) {
+        // endDate before genesis: no blocks exist in this range
+        return Readable.from([], { objectMode: true });
+      }
+      resolvedArgs.endBlock = n;
       delete resolvedArgs.endDate;
+    }
+    if (resolvedArgs.startBlock != null && resolvedArgs.endBlock != null && resolvedArgs.startBlock > resolvedArgs.endBlock) {
+      return Readable.from([], { objectMode: true });
     }
 
     for (const provider of providers) {
@@ -371,7 +381,7 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
   }
 
   // @override
-  async _getBlockNumberByDate(params: { date: Date; chain?: string; chainId: string | bigint; network?: string }) {
+  async _getBlockNumberByDate(params: { date: Date; chain?: string; chainId: string | bigint; network?: string }): Promise<number | undefined> {
     const { date, chainId } = params;
     const chain = params.chain || this.chain;
     const network = params.network || this.providersByNetwork.keys().next().value!;
@@ -396,41 +406,97 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
     throw new AllProvidersUnavailableError('getBlockNumberByDate', this.chain, network);
   }
 
-  private async _verifyBlockBeforeDate(network: string, candidateBlock: number, date: Date): Promise<number> {
+  private async _verifyBlockBeforeDate(network: string, candidateBlock: number, date: Date): Promise<number | undefined> {
     const { web3 } = await this.getWeb3(network, { type: 'historical' });
     const targetTimestamp = Math.floor(date.getTime() / 1000);
     const MAX_ADJUSTMENTS = 16;
+
+    if (!Number.isSafeInteger(candidateBlock) || candidateBlock < 0) {
+      logger.warn(`MultiProvider: invalid candidate ${candidateBlock}, falling back to local binary search`);
+      return this._binarySearchFloorByTimestamp(web3, targetTimestamp);
+    }
+
     let blockNum = candidateBlock;
-
     let block = await web3.eth.getBlock(blockNum);
-    if (!block) return blockNum;
 
+    if (!block) {
+      const latest = await web3.eth.getBlock('latest');
+      this._validateLocalHeader(latest);
+      const latestNum = Number(latest.number);
+      if (candidateBlock > latestNum) {
+        logger.warn(`MultiProvider: candidate ${candidateBlock} beyond local tip ${latestNum}, clamping to tip`);
+        block = latest;
+        blockNum = latestNum;
+      } else {
+        logger.warn(`MultiProvider: local block ${candidateBlock} not found, falling back to binary search`);
+        return this._binarySearchFloorByTimestamp(web3, targetTimestamp);
+      }
+    } else {
+      this._validateLocalHeader(block);
+    }
+
+    // Backward walk: too high → step down up to MAX_ADJUSTMENTS times
     let adjustments = 0;
     while (Number(block.timestamp) > targetTimestamp && blockNum > 0 && adjustments < MAX_ADJUSTMENTS) {
       blockNum--;
       block = await web3.eth.getBlock(blockNum);
+      this._validateLocalHeader(block);
       adjustments++;
     }
 
     if (Number(block.timestamp) > targetTimestamp) {
-      logger.warn(`MultiProvider: block verification exceeded ${MAX_ADJUSTMENTS} adjustments, falling back to binary search`);
-      return this._binarySearchBlockByTimestamp(web3, targetTimestamp);
+      if (blockNum === 0) {
+        // Target is before genesis; no floor exists.
+        return undefined;
+      }
+      logger.warn(`MultiProvider: backward verification exceeded ${MAX_ADJUSTMENTS} adjustments, falling back to binary search`);
+      return this._binarySearchFloorByTimestamp(web3, targetTimestamp);
     }
 
+    // Forward walk: too low → step up up to MAX_ADJUSTMENTS times
     adjustments = 0;
     while (adjustments < MAX_ADJUSTMENTS) {
       const nextBlock = await web3.eth.getBlock(blockNum + 1);
-      if (!nextBlock || Number(nextBlock.timestamp) > targetTimestamp) break;
+      if (!nextBlock || Number(nextBlock.timestamp) > targetTimestamp) {
+        return blockNum;
+      }
+      this._validateLocalHeader(nextBlock);
       blockNum++;
       adjustments++;
     }
 
+    // Forward budget exhausted; peek to confirm whether the next block would still satisfy.
+    const peek = await web3.eth.getBlock(blockNum + 1);
+    if (peek && Number(peek.timestamp) <= targetTimestamp) {
+      logger.warn(`MultiProvider: forward verification exceeded ${MAX_ADJUSTMENTS} adjustments, falling back to binary search`);
+      return this._binarySearchFloorByTimestamp(web3, targetTimestamp);
+    }
     return blockNum;
   }
 
-  private async _binarySearchBlockByTimestamp(web3: any, targetTimestamp: number): Promise<number> {
+  private _validateLocalHeader(block: any): void {
+    if (!block) {
+      throw new Error('local node returned null/undefined block');
+    }
+    const num = Number(block.number);
+    const ts = Number(block.timestamp);
+    if (!Number.isFinite(num) || num < 0 || !Number.isFinite(ts) || ts < 0) {
+      throw new Error(`local node returned malformed block (number=${block.number}, timestamp=${block.timestamp})`);
+    }
+  }
+
+  private async _binarySearchFloorByTimestamp(web3: any, targetTimestamp: number): Promise<number | undefined> {
     const latestBlock = await web3.eth.getBlock('latest');
-    let high = Number(latestBlock.number);
+    this._validateLocalHeader(latestBlock);
+    const latestTs = Number(latestBlock.timestamp);
+    const latestNum = Number(latestBlock.number);
+    if (targetTimestamp >= latestTs) return latestNum;
+
+    const genesis = await web3.eth.getBlock(0);
+    this._validateLocalHeader(genesis);
+    if (targetTimestamp < Number(genesis.timestamp)) return undefined;
+
+    let high = latestNum;
     let low = 0;
     const MAX_ITERATIONS = 64;
     let iterations = 0;
@@ -438,6 +504,7 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
     while (low < high && iterations < MAX_ITERATIONS) {
       const mid = Math.floor((low + high + 1) / 2);
       const block = await web3.eth.getBlock(mid);
+      this._validateLocalHeader(block);
       if (Number(block.timestamp) <= targetTimestamp) {
         low = mid;
       } else {
@@ -464,7 +531,8 @@ export class MultiProviderEVMStateProvider extends BaseEVMStateProvider {
 
     const chainId = await this.getChainId({ network });
     const blockNum = await this._getBlockNumberByDate({ date, chain: this.chain, chainId, network });
-    if (!blockNum) {
+    if (blockNum == null) {
+      // Don't cache null; before-genesis short-circuits cheaply via genesis check on repeat calls.
       return null;
     }
 

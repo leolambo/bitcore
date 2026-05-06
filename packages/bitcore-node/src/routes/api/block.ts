@@ -155,7 +155,7 @@ router.get('/before-time/:time', async function(req: Request, res: Response) {
     return res.json(block);
   } catch (err: any) {
     logger.error('Error getting blocks before time: %o', err.stack || err.message || err);
-    return res.status(500).send(err.message || err);
+    return respondWithError(res, err);
   }
 });
 
