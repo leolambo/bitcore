@@ -1,9 +1,9 @@
 {
   "name": "@bitpay-labs/crypto-rpc",
-  "version": "11.8.1",
+  "version": "11.9.0",
   "description": "A Normalized RPC Interface for Cryptocurrencies",
-  "main": "index.js",
-  "type": "module",
+  "main": "./ts_build/src/index.js",
+  "types": "./ts_build/src/index.d.ts",
   "engines": {
     "node": ">=20"
   },
@@ -12,6 +12,10 @@
     "url": "https://github.com/bitpay/bitcore/tree/master/packages/crypto-rpc"
   },
   "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf ts_build",
+    "compile": "npm run clean && npm run build",
+    "precompile": "npm run lint",
     "docker:test": "npm run hardhat:compile && npm run hardhat:deploy && npm run hardhat:test && mocha --exit --recursive ./test",
     "docker:test:build": "docker compose build",
     "docker:test:down": "docker compose down",
@@ -38,9 +42,11 @@
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "^3.0.8",
     "@nomicfoundation/hardhat-ignition-ethers": "^0.15.9",
+    "@types/node": "^20.11.0",
     "chai": "^6.2.1",
     "hardhat": "^2.22.18",
     "mocha": "^11.7.5",
-    "sinon": "^21.0.0"
+    "sinon": "^21.0.0",
+    "typescript": "^5.4.0"
   }
 }
