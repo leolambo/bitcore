@@ -1,7 +1,6 @@
 // @ts-nocheck
 import sinon from 'sinon';
 import { expect } from 'chai';
-import { createRequire } from 'module';
 import * as SolKit from '@solana/kit';
 import * as SolSystem from '@solana-program/system';
 import * as SolToken from '@solana-program/token';
@@ -10,9 +9,8 @@ import { SolRpc } from '../src/sol/SolRpc';
 import { SplRpc } from '../src/sol/SplRpc';
 import { SOL_ERROR_MESSAGES } from '../src/sol/error_messages';
 
-const require = createRequire(import.meta.url);
-const privateKey1 = require('../blockchain/solana/test/keypair/id.json');
-const privateKey2 = require('../blockchain/solana/test/keypair/id2.json');
+const privateKey1 = require('../../blockchain/solana/test/keypair/id.json');
+const privateKey2 = require('../../blockchain/solana/test/keypair/id2.json');
 // const SolKit = require('@solana/kit'); // Using require to avoid issues with sinon stubbing/spying ES module imports
 
 const bs58Encoder = SolKit.getBase58Encoder();
