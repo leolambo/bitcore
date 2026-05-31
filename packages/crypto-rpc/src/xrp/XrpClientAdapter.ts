@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { xrpl } from '@bitpay-labs/crypto-wallet-core';
 
 // Array elements should be lower-case

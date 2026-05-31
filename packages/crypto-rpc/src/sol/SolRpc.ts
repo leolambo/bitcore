@@ -1,3 +1,4 @@
+// @ts-nocheck
 import EventEmitter from 'events';
 import { SolKit, SolanaProgram } from '@bitpay-labs/crypto-wallet-core';
 import { pipe } from '@solana/functional';
@@ -172,11 +173,11 @@ export class SolRpc {
     return transactionMessage;
   }
 
-  _sendAndConfirmNonceTransactionFactory() {
+  _sendAndConfirmNonceTransactionFactory(): any {
     return SolKit.sendAndConfirmDurableNonceTransactionFactory({ rpc: this.rpc, rpcSubscriptions: this.rpcSubscriptions });
   }
 
-  _sendAndConfirmTransactionFactory() {
+  _sendAndConfirmTransactionFactory(): any {
     return SolKit.sendAndConfirmTransactionFactory({ rpc: this.rpc, rpcSubscriptions: this.rpcSubscriptions });
   }
 

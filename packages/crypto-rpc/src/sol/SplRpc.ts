@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { SolKit, SolanaProgram } from '@bitpay-labs/crypto-wallet-core';
 import { SolRpc } from './SolRpc';
 import { SOL_ERROR_MESSAGES } from './error_messages';

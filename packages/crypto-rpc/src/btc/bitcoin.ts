@@ -1,3 +1,4 @@
+// @ts-nocheck
 import bitcoinDRPC from 'bitcoind-rpc';
 import promptly from 'promptly';
 

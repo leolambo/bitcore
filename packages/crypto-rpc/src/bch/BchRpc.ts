@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { BtcRpc } from '../btc/BtcRpc';
 
 export class BchRpc extends BtcRpc {

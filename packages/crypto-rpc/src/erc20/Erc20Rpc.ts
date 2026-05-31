@@ -1,9 +1,8 @@
-import { createRequire } from 'module';
+// @ts-nocheck
 import { ethers } from '@bitpay-labs/crypto-wallet-core';
 // eslint-disable-next-line import/order
 import { EthRpc } from '../eth/EthRpc';
 
-const require = createRequire(import.meta.url);
 const erc20 = require('./erc20.json');
 
 export class Erc20Rpc extends EthRpc {

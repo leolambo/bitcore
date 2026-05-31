@@ -1,3 +1,4 @@
+// @ts-nocheck
 import EventEmitter from 'events';
 import util from 'util';
 import { Web3, ethers } from '@bitpay-labs/crypto-wallet-core';

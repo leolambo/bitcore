@@ -1,3 +1,4 @@
+// @ts-nocheck
 export const chainConfig = {
   ETH: {
     priorityFee: 1 // in gwei

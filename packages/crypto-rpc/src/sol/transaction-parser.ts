@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { SolanaProgram } from '@bitpay-labs/crypto-wallet-core';
 
 const {

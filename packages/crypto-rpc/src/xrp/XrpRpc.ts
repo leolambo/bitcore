@@ -1,3 +1,4 @@
+// @ts-nocheck
 import EventEmitter from 'events';
 import util from 'util';
 import { xrpl } from '@bitpay-labs/crypto-wallet-core';

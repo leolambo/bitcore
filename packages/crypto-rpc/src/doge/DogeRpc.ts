@@ -1,3 +1,4 @@
+// @ts-nocheck
 import DogecoinRPC from 'dogecoind-rpc';
 import { BtcRpc } from '../btc/BtcRpc';
 

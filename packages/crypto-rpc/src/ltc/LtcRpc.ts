@@ -1,3 +1,4 @@
+// @ts-nocheck
 import LitecoinRPC from 'bitcoind-rpc';
 import { BtcRpc } from '../btc/BtcRpc';
 

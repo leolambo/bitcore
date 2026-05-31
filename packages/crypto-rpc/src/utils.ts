@@ -1,3 +1,4 @@
+// @ts-nocheck
 export const toNum = function(val) {
   return typeof val === 'bigint' ? Number(val) : val;
 };

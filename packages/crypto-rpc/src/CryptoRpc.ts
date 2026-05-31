@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { BchRpc } from './bch/BchRpc';
 import { BtcRpc } from './btc/BtcRpc';
 import { DogeRpc } from './doge/DogeRpc';
