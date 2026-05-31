@@ -2,8 +2,8 @@ import EventEmitter from 'events';
 import { SolKit, SolanaProgram } from '@bitpay-labs/crypto-wallet-core';
 import { pipe } from '@solana/functional';
 import bs58 from 'bs58';
-import { SOL_ERROR_MESSAGES } from './error_messages.js';
-import { parseInstructions } from './transaction-parser.js';
+import { SOL_ERROR_MESSAGES } from './error_messages';
+import { parseInstructions } from './transaction-parser';
 
 const {
   ComputeBudget: SolComputeBudget,
