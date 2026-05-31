@@ -10,9 +10,9 @@ import * as SolComputeBudget from '@solana-program/compute-budget';
 import * as SolLookUpTable from '@solana-program/address-lookup-table';
 import * as SolToken from '@solana-program/token';
 import { pipe } from '@solana/functional';
-import { SolRpc } from '../lib/sol/SolRpc';
-import { SOL_ERROR_MESSAGES } from '../lib/sol/error_messages';
-import { parseInstructions, instructionKeys } from '../lib/sol/transaction-parser';
+import { SolRpc } from '../src/sol/SolRpc';
+import { SOL_ERROR_MESSAGES } from '../src/sol/error_messages';
+import { parseInstructions, instructionKeys } from '../src/sol/transaction-parser';
 
 const require = createRequire(import.meta.url);
 const privateKey1 = require('../blockchain/solana/test/keypair/id.json');

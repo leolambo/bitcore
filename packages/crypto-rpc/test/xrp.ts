@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { assert, expect } from 'chai';
-import { CryptoRpc } from '../index';
+import { CryptoRpc } from '../src/index';
 
 const config = {
   chain: 'XRP',

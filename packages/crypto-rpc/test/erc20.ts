@@ -2,7 +2,7 @@
 import { expect } from 'chai';
 import { createRequire } from 'module';
 import { ethers } from '@bitpay-labs/crypto-wallet-core';
-import { CryptoRpc } from '../index';
+import { CryptoRpc } from '../src/index';
 
 const require = createRequire(import.meta.url);
 const deployedAddresses = require('../blockchain/EVM/ignition/deployments/chain-1337/deployed_addresses.json');

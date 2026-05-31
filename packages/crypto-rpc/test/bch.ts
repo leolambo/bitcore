@@ -2,7 +2,7 @@
 import sinon from 'sinon';
 import assert from 'assert';
 import { expect } from 'chai';
-import { CryptoRpc } from '../index';
+import { CryptoRpc } from '../src/index';
 
 const config = {
   chain: 'BCH',

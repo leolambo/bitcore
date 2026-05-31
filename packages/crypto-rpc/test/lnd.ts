@@ -2,7 +2,7 @@
 import fs from 'fs';
 import { expect } from 'chai';
 import assert from 'assert';
-import { CryptoRpc } from '../index';
+import { CryptoRpc } from '../src/index';
 
 
 const config1 = {
