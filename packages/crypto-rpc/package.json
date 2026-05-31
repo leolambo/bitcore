@@ -25,7 +25,8 @@
     "url": "https://github.com/bitpay/bitcore/tree/master/packages/crypto-rpc"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run copy-assets",
+    "copy-assets": "cp src/erc20/erc20.json ts_build/src/erc20/erc20.json",
     "clean": "rm -rf ts_build",
     "compile": "npm run clean && npm run build",
     "precompile": "npm run lint",
