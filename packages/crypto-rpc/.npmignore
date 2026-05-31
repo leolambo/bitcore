@@ -1,0 +1,12 @@
+src/
+test/
+!ts_build/
+!ts_build/**
+ts_build/test/
+blockchain/
+tsconfig.json
+docker-compose.yml
+start.dockerfile
+.eslintrc*
+*.log
+.DS_Store
