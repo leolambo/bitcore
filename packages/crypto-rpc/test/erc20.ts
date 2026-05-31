@@ -1,7 +1,8 @@
+// @ts-nocheck
 import { expect } from 'chai';
 import { createRequire } from 'module';
 import { ethers } from '@bitpay-labs/crypto-wallet-core';
-import { CryptoRpc } from '../index.js';
+import { CryptoRpc } from '../index';
 
 const require = createRequire(import.meta.url);
 const deployedAddresses = require('../blockchain/EVM/ignition/deployments/chain-1337/deployed_addresses.json');
@@ -161,4 +162,3 @@ describe('ERC20 Tests', function() {
     expect(decoded.decodedData.args[1]).to.equal(68862999999999990n);
   });
 });
-

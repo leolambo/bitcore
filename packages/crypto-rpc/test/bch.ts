@@ -1,39 +1,43 @@
+// @ts-nocheck
 import sinon from 'sinon';
 import assert from 'assert';
 import { expect } from 'chai';
-import { CryptoRpc } from '../index.js';
+import { CryptoRpc } from '../index';
 
 const config = {
-  chain: 'DOGE',
-  host: process.env.HOST_DOGE || 'dogecoin',
+  chain: 'BCH',
+  host: process.env.HOST_BCH || 'bitcoin-cash',
   protocol: 'http',
-  rpcPort: '22555',
+  rpcPort: '9333',
   rpcUser: 'cryptorpc',
   rpcPass: 'local321',
   tokens: {},
   currencyConfig: {
-    sendTo: 'n35ckY9BRmmjs9CCFfkaZAjeDpdaY4phRZ',
+    sendTo: 'bchreg:qq9kqhzxeul20r7nsl2lrwh8d5kw97np9u960ue086',
     unlockPassword: 'password',
     rawTx:
-    '01000000018e767be30f1e4a70dcaf2b2374fe26cfbd624d7cb3e6b17244b7100abcf4dbad0000000049483045022100fe9578607f05acd8484dff649afb8efbd3fcf3bce72ac4b1a345a1a22849f805022078a29ba99250a25a8000fd76675167088c2798626c480ac2c6b41fcb4868163601feffffff02004d4158782d00001976a914920f410c5799da55aad17ebf4d360eecf0ba481088ac00f2052a010000001976a914ec880de03abdb41d875ad5290ad59bbf5653fcd488ac53000000'
+    '0200000001445703d7470ec3e435db0f33da332fc654ae0c8d264572e487bd427125659d7500000000484730440220704a6a336eb930a95b2a6a941b3c43ccb2207db803a2332512ac255c1740b9d7022057c7bc00a188de7f4868774d1e9ff626f8bd6eca8187763b9cb184354ddc5dde41feffffff0200021024010000001976a914db1f764e6a60e4a8cb919c55e95ac41517f5cddc88ac00e1f505000000001976a9140b605c46cf3ea78fd387d5f1bae76d2ce2fa612f88ac66000000'
   }
 };
 
-describe('DOGE Tests', function() {
-  this.timeout(20000);
-  let blockHash = '';
-  const currency = 'DOGE';
+describe('BCH Tests', function() {
+  this.timeout(30000);
+  const currency = 'BCH';
   const { currencyConfig } = config;
-  const rpcs = new CryptoRpc(config, currencyConfig);
-  const bitcoin = rpcs.get(currency);
+  let blockHash = '';
+  let rpcs;
+  let bitcoin;
 
-  before(async () => {
+  before(async function() {
+    this.timeout(60000);
+    rpcs = new CryptoRpc(config, currencyConfig);
+    bitcoin = rpcs.get(currency);
     try {
       await bitcoin.asyncCall('encryptWallet', ['password']);
     } catch (e) {
       console.warn('wallet already encrypted');
     }
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(resolve => setTimeout(resolve, 2000));
     await bitcoin.asyncCall('generate', [101]);
   });
 
@@ -45,10 +49,10 @@ describe('DOGE Tests', function() {
 
 
   it('should convert fee to satoshis per kilobyte with estimateFee', async () => {
-    sinon.stub(bitcoin.rpc, 'estimateSmartFee').callsFake((nBlocks, cb) => {
-      cb(null, { result: { 'feerate': 0.00001234, 'blocks': 2 } });
+    sinon.stub(bitcoin.rpc, 'estimateFee').callsFake((cb) => {
+      cb(null, { result: 0.00001234 });
     });
-    const fee = await bitcoin.estimateFee({ nBlocks: 2 });
+    const fee = await bitcoin.estimateFee();
     expect(fee).to.be.eq(1.234);
   });
 
@@ -74,7 +78,7 @@ describe('DOGE Tests', function() {
 
   it('should be able to get a balance', async () => {
     const balance = await rpcs.getBalance({ currency });
-    expect(balance).to.eq(2050000000000000);
+    expect(balance).to.eq(5000000000);
     assert(balance != undefined);
   });
 
@@ -109,19 +113,19 @@ describe('DOGE Tests', function() {
   it('should be able to send many transactions', async () => {
     const payToArray = [];
     const transaction1 = {
-      address: 'mzVk8WuGZGvFP6qfrbeAyu7oFFRFaMg5oB',
+      address: 'bchreg:qrmap3fwpufpzk8j936aetfupppezngfeut6kqqds6',
       amount: 10000
     };
     const transaction2 = {
-      address: 'mpqVKMU5iGz9oaGKptgRXhAyyR2WyZFh3a',
+      address: 'bchreg:qpmrahuqhpmq4se34zx4lt9lp3l5j4t4ggzf98lk8v',
       amount: 20000
     };
     const transaction3 = {
-      address: 'mnhQ2e7mqsat8wfuhiE96z6JcZDnSBFz3F',
+      address: 'qz07vf90w70s8d0pfx9qygxxlpgr2vwz65d53p22cr',
       amount: 30000
     };
     const transaction4 = {
-      address: 'mshywUvMRg1oNcAefEaL5UVDqe6NjuoHid',
+      address: 'qzp2lmc7m49du2n55qmyattncf404vmgnq8gr53aj7',
       amount: 40000
     };
     payToArray.push(transaction1);
@@ -130,7 +134,7 @@ describe('DOGE Tests', function() {
     payToArray.push(transaction4);
     const maxOutputs = 2;
     const maxValue = 1e8;
-    const eventEmitter = rpcs.rpcs.DOGE.emitter;
+    const eventEmitter = rpcs.rpcs.BCH.emitter;
     let eventCounter = 0;
     const emitResults = [];
     const emitPromise = new Promise(resolve => {
@@ -167,14 +171,14 @@ describe('DOGE Tests', function() {
 
   it('should reject when one of many transactions fails', async () => {
     const payToArray = [
-      { address: 'mshywUvMRg1oNcAefEaL5UVDqe6NjuoHid',
+      { address: 'bchreg:qrmap3fwpufpzk8j936aetfupppezngfeut6kqqds6',
         amount: 10000
       },
       { address: 'funkyColdMedina',
         amount: 1
       },
     ];
-    const eventEmitter = rpcs.rpcs.DOGE.emitter;
+    const eventEmitter = rpcs.rpcs.BCH.emitter;
     const emitResults = [];
     const emitPromise = new Promise(resolve => {
       eventEmitter.on('failure', (emitData) => {
@@ -227,9 +231,9 @@ describe('DOGE Tests', function() {
   });
 
   it('should be able to send a batched transaction', async() => {
-    const address1 = 'mrc9MauBwqPGkLP7wckjfPX2Y8ZpWXnGLD';
+    const address1 = 'bchreg:qq2lqjaeut5ppjkx9339htfed8enx7hmugk37ytwqy';
     const amount1 = 10000;
-    const address2 = 'n3NB6EWrMWvGobFL2JE5tThiiM5Eh3yWvT';
+    const address2 = 'bchreg:qq6n0n37mut4353m9k2zm5nh0pejk7vh7u77tan544';
     const amount2 = 20000;
     const batch = {};
     batch[address1] = amount1;
@@ -241,7 +245,7 @@ describe('DOGE Tests', function() {
     expect(txid).to.have.lengthOf(64);
     assert(txid);
   });
-
+ 
   it('should be able to get server info', async () => {
     const info = await rpcs.getServerInfo({ currency });
     expect(info).to.have.property('chain');
@@ -249,12 +253,13 @@ describe('DOGE Tests', function() {
     expect(info).to.have.property('headers');
     expect(info).to.have.property('bestblockhash');
     expect(info).to.have.property('difficulty');
+    // expect(info).to.have.property('time');
     expect(info).to.have.property('mediantime');
     expect(info).to.have.property('verificationprogress');
     expect(info).to.have.property('initialblockdownload');
     expect(info).to.have.property('chainwork');
+    expect(info).to.have.property('size_on_disk');
     expect(info).to.have.property('pruned');
-    expect(info).to.have.property('softforks');
-    expect(info).to.have.property('bip9_softforks');
+    expect(info).to.have.property('warnings');
   });
 });

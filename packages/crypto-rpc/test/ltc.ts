@@ -1,57 +1,85 @@
-import sinon from 'sinon';
+// @ts-nocheck
 import assert from 'assert';
+import sinon from 'sinon';
 import { expect } from 'chai';
-import { CryptoRpc } from '../index.js';
+import { CryptoRpc } from '../index';
 
 const config = {
-  chain: 'BCH',
-  host: process.env.HOST_BCH || 'bitcoin-cash',
+  chain: 'LTC',
+  host: process.env.HOST_LTC || 'litecoin',
   protocol: 'http',
-  rpcPort: '9333',
+  rpcPort: '10333',
   rpcUser: 'cryptorpc',
   rpcPass: 'local321',
   tokens: {},
   currencyConfig: {
-    sendTo: 'bchreg:qq9kqhzxeul20r7nsl2lrwh8d5kw97np9u960ue086',
+    sendTo: '2NGFWyW3LBPr6StDuDSNFzQF3Jouuup1rua',
     unlockPassword: 'password',
     rawTx:
-    '0200000001445703d7470ec3e435db0f33da332fc654ae0c8d264572e487bd427125659d7500000000484730440220704a6a336eb930a95b2a6a941b3c43ccb2207db803a2332512ac255c1740b9d7022057c7bc00a188de7f4868774d1e9ff626f8bd6eca8187763b9cb184354ddc5dde41feffffff0200021024010000001976a914db1f764e6a60e4a8cb919c55e95ac41517f5cddc88ac00e1f505000000001976a9140b605c46cf3ea78fd387d5f1bae76d2ce2fa612f88ac66000000'
+      '0100000001641ba2d21efa8db1a08c0072663adf4c4bc3be9ee5aabb530b2d4080b8a41cca000000006a4730440220062105df71eb10b5ead104826e388303a59d5d3d134af73cdf0d5e685650f95c0220188c8a966a2d586430d84aa7624152a556550c3243baad5415c92767dcad257f0121037aaa54736c5ffa13132e8ca821be16ce4034ae79472053dde5aa4347034bc0a2ffffffff0240787d010000000017a914c8241f574dfade4d446ec90cc0e534cb120b45e387eada4f1c000000001976a9141576306b9cc227279b2a6c95c2b017bb22b0421f88ac00000000'
   }
 };
 
-describe('BCH Tests', function() {
-  this.timeout(30000);
-  const currency = 'BCH';
+describe('LTC Tests', function() {
+  this.timeout(10000);
+  const currency = 'LTC';
   const { currencyConfig } = config;
+  let txid = '';
   let blockHash = '';
   let rpcs;
   let bitcoin;
-
-  before(async function() {
-    this.timeout(60000);
+  
+  before(function() {
     rpcs = new CryptoRpc(config, currencyConfig);
     bitcoin = rpcs.get(currency);
+  });
+
+  it('should determine if wallet is encrypted', async () => {
+    expect(await bitcoin.isWalletEncrypted()).to.eq(false);
     try {
       await bitcoin.asyncCall('encryptWallet', ['password']);
+      await new Promise(resolve => setTimeout(resolve, 5000));
     } catch (e) {
       console.warn('wallet already encrypted');
     }
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    expect(await bitcoin.isWalletEncrypted()).to.eq(true);
     await bitcoin.asyncCall('generate', [101]);
   });
 
+  it('walletUnlock should unlock wallet successfully', async () => {
+    await bitcoin.walletUnlock({ passphrase: config.currencyConfig.unlockPassword, time: 10 });
+  });
+
+  it('walletUnlock should error on if wrong args', async () => {
+    await bitcoin.walletUnlock({ passphrase: config.currencyConfig.unlockPassword })
+      .catch(err => {
+        assert(err);
+        expect(typeof err).to.eq('object');
+        expect(err).to.have.property('message');
+        expect(err.message).to.eq('JSON value is not an integer as expected');
+      });
+  });
+
+  it('walletUnlock should error on if wrong passphrase', async () => {
+    await bitcoin.walletUnlock({ passphrase: 'wrong', time: 10 })
+      .catch(err => {
+        assert(err);
+        expect(typeof err).to.eq('object');
+        expect(err).to.have.property('message');
+        expect(err.message).to.eq('Error: The wallet passphrase entered was incorrect.');
+      });
+  });
 
   it('should be able to get a block hash', async () => {
     blockHash = await rpcs.getBestBlockHash({ currency });
     expect(blockHash).to.have.lengthOf('64');
   });
 
-
   it('should convert fee to satoshis per kilobyte with estimateFee', async () => {
-    sinon.stub(bitcoin.rpc, 'estimateFee').callsFake((cb) => {
-      cb(null, { result: 0.00001234 });
+    sinon.stub(bitcoin.rpc, 'estimateSmartFee').callsFake((nBlocks, cb) => {
+      cb(null, { result: { 'feerate': 0.00001234, 'blocks': 2 } });
     });
-    const fee = await bitcoin.estimateFee();
+    const fee = await bitcoin.estimateFee({ nBlocks: 2 });
     expect(fee).to.be.eq(1.234);
   });
 
@@ -59,7 +87,9 @@ describe('BCH Tests', function() {
     const reqBlock = await rpcs.getBlock({ currency, hash: blockHash });
     expect(reqBlock).to.have.property('hash');
     expect(reqBlock).to.have.property('confirmations');
+    expect(reqBlock).to.have.property('strippedsize');
     expect(reqBlock).to.have.property('size');
+    expect(reqBlock).to.have.property('weight');
     expect(reqBlock).to.have.property('height');
     expect(reqBlock).to.have.property('version');
     expect(reqBlock).to.have.property('versionHex');
@@ -71,6 +101,7 @@ describe('BCH Tests', function() {
     expect(reqBlock).to.have.property('bits');
     expect(reqBlock).to.have.property('difficulty');
     expect(reqBlock).to.have.property('chainwork');
+    expect(reqBlock).to.have.property('nTx');
     expect(reqBlock).to.have.property('previousblockhash');
     assert(reqBlock);
   });
@@ -82,49 +113,27 @@ describe('BCH Tests', function() {
   });
 
   it('should be able to send a transaction', async () => {
-    const txid = await rpcs.unlockAndSendToAddress({ currency, address: config.currencyConfig.sendTo, amount: '10000', passphrase: currencyConfig.unlockPassword });
+    txid = await rpcs.unlockAndSendToAddress({ currency, address: config.currencyConfig.sendTo, amount: '10000', passphrase: currencyConfig.unlockPassword });
     expect(txid).to.have.lengthOf(64);
     assert(txid);
-    await bitcoin.asyncCall('generate', [2]);
-
-    it('should get confirmations', async () => {
-      const confirmations = await rpcs.getConfirmations({ currency, txid });
-      assert(confirmations != undefined);
-      expect(confirmations).to.eq(2);
-    });
-
-
-    it('should be able to get a transaction', async () => {
-      const tx = await rpcs.getTransaction({ currency, txid });
-      expect(tx).to.have.property('txid');
-      expect(tx).to.have.property('hash');
-      expect(tx).to.have.property('version');
-      expect(tx).to.have.property('size');
-      expect(tx).to.have.property('locktime');
-      expect(tx).to.have.property('vin');
-      expect(tx).to.have.property('vout');
-      expect(tx).to.have.property('hex');
-      assert(tx);
-      assert(typeof tx === 'object');
-    });
   });
 
   it('should be able to send many transactions', async () => {
     const payToArray = [];
     const transaction1 = {
-      address: 'bchreg:qrmap3fwpufpzk8j936aetfupppezngfeut6kqqds6',
+      address: 'mm7mGjBBe1sUF8SFXCW779DX8XrmpReBTg',
       amount: 10000
     };
     const transaction2 = {
-      address: 'bchreg:qpmrahuqhpmq4se34zx4lt9lp3l5j4t4ggzf98lk8v',
+      address: 'mm7mGjBBe1sUF8SFXCW779DX8XrmpReBTg',
       amount: 20000
     };
     const transaction3 = {
-      address: 'qz07vf90w70s8d0pfx9qygxxlpgr2vwz65d53p22cr',
+      address: 'mgoVRuvgbgyZL8iQWfS6TLPZzQnpRMHg5H',
       amount: 30000
     };
     const transaction4 = {
-      address: 'qzp2lmc7m49du2n55qmyattncf404vmgnq8gr53aj7',
+      address: 'mv5XmsNbK2deMDhkVq5M28BAD14hvpQ9b2',
       amount: 40000
     };
     payToArray.push(transaction1);
@@ -133,7 +142,7 @@ describe('BCH Tests', function() {
     payToArray.push(transaction4);
     const maxOutputs = 2;
     const maxValue = 1e8;
-    const eventEmitter = rpcs.rpcs.BCH.emitter;
+    const eventEmitter = rpcs.rpcs.LTC.emitter;
     let eventCounter = 0;
     const emitResults = [];
     const emitPromise = new Promise(resolve => {
@@ -164,20 +173,16 @@ describe('BCH Tests', function() {
       const transactionObj = { address: emitData.address, amount: emitData.amount };
       expect(payToArray.includes(transactionObj));
     }
-
-    await bitcoin.asyncCall('generate', [10]);
   });
 
   it('should reject when one of many transactions fails', async () => {
+    const address = config.currencyConfig.sendTo;
+    const amount = '1000';
     const payToArray = [
-      { address: 'bchreg:qrmap3fwpufpzk8j936aetfupppezngfeut6kqqds6',
-        amount: 10000
-      },
-      { address: 'funkyColdMedina',
-        amount: 1
-      },
+      { address, amount },
+      { address: 'funkyColdMedina', amount: 1 }
     ];
-    const eventEmitter = rpcs.rpcs.BCH.emitter;
+    const eventEmitter = rpcs.rpcs.LTC.emitter;
     const emitResults = [];
     const emitPromise = new Promise(resolve => {
       eventEmitter.on('failure', (emitData) => {
@@ -197,6 +202,20 @@ describe('BCH Tests', function() {
     assert(emitResults[0].error);
   });
 
+  it('should be able to get a transaction', async () => {
+    const tx = await rpcs.getTransaction({ currency, txid });
+    expect(tx).to.have.property('txid');
+    expect(tx).to.have.property('hash');
+    expect(tx).to.have.property('version');
+    expect(tx).to.have.property('size');
+    expect(tx).to.have.property('vsize');
+    expect(tx).to.have.property('locktime');
+    expect(tx).to.have.property('vin');
+    expect(tx).to.have.property('vout');
+    expect(tx).to.have.property('hex');
+    assert(tx);
+    assert(typeof tx === 'object');
+  });
 
   it('should be able to decode a raw transaction', async () => {
     const { rawTx } = config.currencyConfig;
@@ -206,6 +225,7 @@ describe('BCH Tests', function() {
     expect(decoded).to.have.property('hash');
     expect(decoded).to.have.property('version');
     expect(decoded).to.have.property('size');
+    expect(decoded).to.have.property('vsize');
     expect(decoded).to.have.property('locktime');
     expect(decoded).to.have.property('vin');
     expect(decoded).to.have.property('vout');
@@ -219,6 +239,15 @@ describe('BCH Tests', function() {
     expect(tip).to.have.property('height');
   });
 
+  it('should get confirmations', async () => {
+    let confirmations = await rpcs.getConfirmations({ currency, txid });
+    assert(confirmations != undefined);
+    expect(confirmations).to.eq(0);
+    await bitcoin.asyncCall('generate', [1]);
+    confirmations = await rpcs.getConfirmations({ currency, txid });
+    expect(confirmations).to.eq(1);
+  });
+
   it('should validate address', async () => {
     const isValid = await rpcs.validateAddress({ currency, address: config.currencyConfig.sendTo });
     assert(isValid === true);
@@ -230,10 +259,10 @@ describe('BCH Tests', function() {
   });
 
   it('should be able to send a batched transaction', async() => {
-    const address1 = 'bchreg:qq2lqjaeut5ppjkx9339htfed8enx7hmugk37ytwqy';
-    const amount1 = 10000;
-    const address2 = 'bchreg:qq6n0n37mut4353m9k2zm5nh0pejk7vh7u77tan544';
-    const amount2 = 20000;
+    const address1 = 'mtXWDB6k5yC5v7TcwKZHB89SUp85yCKshy';
+    const amount1 = '10000';
+    const address2 = 'msngvArStqsSqmkG7W7Fc9jotPcURyLyYu';
+    const amount2 = '20000';
     const batch = {};
     batch[address1] = amount1;
     batch[address2] = amount2;
@@ -244,7 +273,7 @@ describe('BCH Tests', function() {
     expect(txid).to.have.lengthOf(64);
     assert(txid);
   });
- 
+
   it('should be able to get server info', async () => {
     const info = await rpcs.getServerInfo({ currency });
     expect(info).to.have.property('chain');

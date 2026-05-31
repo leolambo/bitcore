@@ -1,5 +1,6 @@
+// @ts-nocheck
 import { expect } from 'chai';
-import * as utils from '../lib/utils.js';
+import * as utils from '../lib/utils';
 
 const { BI } = utils;
 

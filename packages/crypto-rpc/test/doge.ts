@@ -1,78 +1,49 @@
-import assert from 'assert';
+// @ts-nocheck
 import sinon from 'sinon';
+import assert from 'assert';
 import { expect } from 'chai';
-import { CryptoRpc } from '../index.js';
+import { CryptoRpc } from '../index';
 
 const config = {
-  chain: 'LTC',
-  host: process.env.HOST_LTC || 'litecoin',
+  chain: 'DOGE',
+  host: process.env.HOST_DOGE || 'dogecoin',
   protocol: 'http',
-  rpcPort: '10333',
+  rpcPort: '22555',
   rpcUser: 'cryptorpc',
   rpcPass: 'local321',
   tokens: {},
   currencyConfig: {
-    sendTo: '2NGFWyW3LBPr6StDuDSNFzQF3Jouuup1rua',
+    sendTo: 'n35ckY9BRmmjs9CCFfkaZAjeDpdaY4phRZ',
     unlockPassword: 'password',
     rawTx:
-      '0100000001641ba2d21efa8db1a08c0072663adf4c4bc3be9ee5aabb530b2d4080b8a41cca000000006a4730440220062105df71eb10b5ead104826e388303a59d5d3d134af73cdf0d5e685650f95c0220188c8a966a2d586430d84aa7624152a556550c3243baad5415c92767dcad257f0121037aaa54736c5ffa13132e8ca821be16ce4034ae79472053dde5aa4347034bc0a2ffffffff0240787d010000000017a914c8241f574dfade4d446ec90cc0e534cb120b45e387eada4f1c000000001976a9141576306b9cc227279b2a6c95c2b017bb22b0421f88ac00000000'
+    '01000000018e767be30f1e4a70dcaf2b2374fe26cfbd624d7cb3e6b17244b7100abcf4dbad0000000049483045022100fe9578607f05acd8484dff649afb8efbd3fcf3bce72ac4b1a345a1a22849f805022078a29ba99250a25a8000fd76675167088c2798626c480ac2c6b41fcb4868163601feffffff02004d4158782d00001976a914920f410c5799da55aad17ebf4d360eecf0ba481088ac00f2052a010000001976a914ec880de03abdb41d875ad5290ad59bbf5653fcd488ac53000000'
   }
 };
 
-describe('LTC Tests', function() {
-  this.timeout(10000);
-  const currency = 'LTC';
-  const { currencyConfig } = config;
-  let txid = '';
+describe('DOGE Tests', function() {
+  this.timeout(20000);
   let blockHash = '';
-  let rpcs;
-  let bitcoin;
-  
-  before(function() {
-    rpcs = new CryptoRpc(config, currencyConfig);
-    bitcoin = rpcs.get(currency);
-  });
+  const currency = 'DOGE';
+  const { currencyConfig } = config;
+  const rpcs = new CryptoRpc(config, currencyConfig);
+  const bitcoin = rpcs.get(currency);
 
-  it('should determine if wallet is encrypted', async () => {
-    expect(await bitcoin.isWalletEncrypted()).to.eq(false);
+  before(async () => {
     try {
       await bitcoin.asyncCall('encryptWallet', ['password']);
-      await new Promise(resolve => setTimeout(resolve, 5000));
     } catch (e) {
       console.warn('wallet already encrypted');
     }
-    expect(await bitcoin.isWalletEncrypted()).to.eq(true);
+    await new Promise(resolve => setTimeout(resolve, 5000));
     await bitcoin.asyncCall('generate', [101]);
   });
 
-  it('walletUnlock should unlock wallet successfully', async () => {
-    await bitcoin.walletUnlock({ passphrase: config.currencyConfig.unlockPassword, time: 10 });
-  });
-
-  it('walletUnlock should error on if wrong args', async () => {
-    await bitcoin.walletUnlock({ passphrase: config.currencyConfig.unlockPassword })
-      .catch(err => {
-        assert(err);
-        expect(typeof err).to.eq('object');
-        expect(err).to.have.property('message');
-        expect(err.message).to.eq('JSON value is not an integer as expected');
-      });
-  });
-
-  it('walletUnlock should error on if wrong passphrase', async () => {
-    await bitcoin.walletUnlock({ passphrase: 'wrong', time: 10 })
-      .catch(err => {
-        assert(err);
-        expect(typeof err).to.eq('object');
-        expect(err).to.have.property('message');
-        expect(err.message).to.eq('Error: The wallet passphrase entered was incorrect.');
-      });
-  });
 
   it('should be able to get a block hash', async () => {
     blockHash = await rpcs.getBestBlockHash({ currency });
     expect(blockHash).to.have.lengthOf('64');
   });
+
 
   it('should convert fee to satoshis per kilobyte with estimateFee', async () => {
     sinon.stub(bitcoin.rpc, 'estimateSmartFee').callsFake((nBlocks, cb) => {
@@ -86,9 +57,7 @@ describe('LTC Tests', function() {
     const reqBlock = await rpcs.getBlock({ currency, hash: blockHash });
     expect(reqBlock).to.have.property('hash');
     expect(reqBlock).to.have.property('confirmations');
-    expect(reqBlock).to.have.property('strippedsize');
     expect(reqBlock).to.have.property('size');
-    expect(reqBlock).to.have.property('weight');
     expect(reqBlock).to.have.property('height');
     expect(reqBlock).to.have.property('version');
     expect(reqBlock).to.have.property('versionHex');
@@ -100,39 +69,60 @@ describe('LTC Tests', function() {
     expect(reqBlock).to.have.property('bits');
     expect(reqBlock).to.have.property('difficulty');
     expect(reqBlock).to.have.property('chainwork');
-    expect(reqBlock).to.have.property('nTx');
     expect(reqBlock).to.have.property('previousblockhash');
     assert(reqBlock);
   });
 
   it('should be able to get a balance', async () => {
     const balance = await rpcs.getBalance({ currency });
-    expect(balance).to.eq(5000000000);
+    expect(balance).to.eq(2050000000000000);
     assert(balance != undefined);
   });
 
   it('should be able to send a transaction', async () => {
-    txid = await rpcs.unlockAndSendToAddress({ currency, address: config.currencyConfig.sendTo, amount: '10000', passphrase: currencyConfig.unlockPassword });
+    const txid = await rpcs.unlockAndSendToAddress({ currency, address: config.currencyConfig.sendTo, amount: '10000', passphrase: currencyConfig.unlockPassword });
     expect(txid).to.have.lengthOf(64);
     assert(txid);
+    await bitcoin.asyncCall('generate', [2]);
+
+    it('should get confirmations', async () => {
+      const confirmations = await rpcs.getConfirmations({ currency, txid });
+      assert(confirmations != undefined);
+      expect(confirmations).to.eq(2);
+    });
+
+
+    it('should be able to get a transaction', async () => {
+      const tx = await rpcs.getTransaction({ currency, txid });
+      expect(tx).to.have.property('txid');
+      expect(tx).to.have.property('hash');
+      expect(tx).to.have.property('version');
+      expect(tx).to.have.property('size');
+      expect(tx).to.have.property('locktime');
+      expect(tx).to.have.property('vin');
+      expect(tx).to.have.property('vout');
+      expect(tx).to.have.property('hex');
+      assert(tx);
+      assert(typeof tx === 'object');
+    });
   });
 
   it('should be able to send many transactions', async () => {
     const payToArray = [];
     const transaction1 = {
-      address: 'mm7mGjBBe1sUF8SFXCW779DX8XrmpReBTg',
+      address: 'mzVk8WuGZGvFP6qfrbeAyu7oFFRFaMg5oB',
       amount: 10000
     };
     const transaction2 = {
-      address: 'mm7mGjBBe1sUF8SFXCW779DX8XrmpReBTg',
+      address: 'mpqVKMU5iGz9oaGKptgRXhAyyR2WyZFh3a',
       amount: 20000
     };
     const transaction3 = {
-      address: 'mgoVRuvgbgyZL8iQWfS6TLPZzQnpRMHg5H',
+      address: 'mnhQ2e7mqsat8wfuhiE96z6JcZDnSBFz3F',
       amount: 30000
     };
     const transaction4 = {
-      address: 'mv5XmsNbK2deMDhkVq5M28BAD14hvpQ9b2',
+      address: 'mshywUvMRg1oNcAefEaL5UVDqe6NjuoHid',
       amount: 40000
     };
     payToArray.push(transaction1);
@@ -141,7 +131,7 @@ describe('LTC Tests', function() {
     payToArray.push(transaction4);
     const maxOutputs = 2;
     const maxValue = 1e8;
-    const eventEmitter = rpcs.rpcs.LTC.emitter;
+    const eventEmitter = rpcs.rpcs.DOGE.emitter;
     let eventCounter = 0;
     const emitResults = [];
     const emitPromise = new Promise(resolve => {
@@ -172,16 +162,20 @@ describe('LTC Tests', function() {
       const transactionObj = { address: emitData.address, amount: emitData.amount };
       expect(payToArray.includes(transactionObj));
     }
+
+    await bitcoin.asyncCall('generate', [10]);
   });
 
   it('should reject when one of many transactions fails', async () => {
-    const address = config.currencyConfig.sendTo;
-    const amount = '1000';
     const payToArray = [
-      { address, amount },
-      { address: 'funkyColdMedina', amount: 1 }
+      { address: 'mshywUvMRg1oNcAefEaL5UVDqe6NjuoHid',
+        amount: 10000
+      },
+      { address: 'funkyColdMedina',
+        amount: 1
+      },
     ];
-    const eventEmitter = rpcs.rpcs.LTC.emitter;
+    const eventEmitter = rpcs.rpcs.DOGE.emitter;
     const emitResults = [];
     const emitPromise = new Promise(resolve => {
       eventEmitter.on('failure', (emitData) => {
@@ -201,20 +195,6 @@ describe('LTC Tests', function() {
     assert(emitResults[0].error);
   });
 
-  it('should be able to get a transaction', async () => {
-    const tx = await rpcs.getTransaction({ currency, txid });
-    expect(tx).to.have.property('txid');
-    expect(tx).to.have.property('hash');
-    expect(tx).to.have.property('version');
-    expect(tx).to.have.property('size');
-    expect(tx).to.have.property('vsize');
-    expect(tx).to.have.property('locktime');
-    expect(tx).to.have.property('vin');
-    expect(tx).to.have.property('vout');
-    expect(tx).to.have.property('hex');
-    assert(tx);
-    assert(typeof tx === 'object');
-  });
 
   it('should be able to decode a raw transaction', async () => {
     const { rawTx } = config.currencyConfig;
@@ -224,7 +204,6 @@ describe('LTC Tests', function() {
     expect(decoded).to.have.property('hash');
     expect(decoded).to.have.property('version');
     expect(decoded).to.have.property('size');
-    expect(decoded).to.have.property('vsize');
     expect(decoded).to.have.property('locktime');
     expect(decoded).to.have.property('vin');
     expect(decoded).to.have.property('vout');
@@ -238,15 +217,6 @@ describe('LTC Tests', function() {
     expect(tip).to.have.property('height');
   });
 
-  it('should get confirmations', async () => {
-    let confirmations = await rpcs.getConfirmations({ currency, txid });
-    assert(confirmations != undefined);
-    expect(confirmations).to.eq(0);
-    await bitcoin.asyncCall('generate', [1]);
-    confirmations = await rpcs.getConfirmations({ currency, txid });
-    expect(confirmations).to.eq(1);
-  });
-
   it('should validate address', async () => {
     const isValid = await rpcs.validateAddress({ currency, address: config.currencyConfig.sendTo });
     assert(isValid === true);
@@ -258,10 +228,10 @@ describe('LTC Tests', function() {
   });
 
   it('should be able to send a batched transaction', async() => {
-    const address1 = 'mtXWDB6k5yC5v7TcwKZHB89SUp85yCKshy';
-    const amount1 = '10000';
-    const address2 = 'msngvArStqsSqmkG7W7Fc9jotPcURyLyYu';
-    const amount2 = '20000';
+    const address1 = 'mrc9MauBwqPGkLP7wckjfPX2Y8ZpWXnGLD';
+    const amount1 = 10000;
+    const address2 = 'n3NB6EWrMWvGobFL2JE5tThiiM5Eh3yWvT';
+    const amount2 = 20000;
     const batch = {};
     batch[address1] = amount1;
     batch[address2] = amount2;
@@ -280,13 +250,12 @@ describe('LTC Tests', function() {
     expect(info).to.have.property('headers');
     expect(info).to.have.property('bestblockhash');
     expect(info).to.have.property('difficulty');
-    // expect(info).to.have.property('time');
     expect(info).to.have.property('mediantime');
     expect(info).to.have.property('verificationprogress');
     expect(info).to.have.property('initialblockdownload');
     expect(info).to.have.property('chainwork');
-    expect(info).to.have.property('size_on_disk');
     expect(info).to.have.property('pruned');
-    expect(info).to.have.property('warnings');
+    expect(info).to.have.property('softforks');
+    expect(info).to.have.property('bip9_softforks');
   });
 });
