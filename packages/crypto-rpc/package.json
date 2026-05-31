@@ -4,6 +4,19 @@
   "description": "A Normalized RPC Interface for Cryptocurrencies",
   "main": "./ts_build/src/index.js",
   "types": "./ts_build/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./ts_build/src/index.d.ts",
+      "require": "./ts_build/src/index.js",
+      "default": "./ts_build/src/index.js"
+    },
+    "./lib/*": {
+      "types": "./ts_build/src/*.d.ts",
+      "require": "./ts_build/src/*.js",
+      "default": "./ts_build/src/*.js"
+    },
+    "./package.json": "./package.json"
+  },
   "engines": {
     "node": ">=20"
   },
