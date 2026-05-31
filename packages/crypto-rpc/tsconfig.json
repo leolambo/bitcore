@@ -9,6 +9,7 @@
     "noImplicitAny": false,
     "declaration": true,
     "outDir": "ts_build",
+    "rootDir": ".",
     "sourceMap": true,
     "resolveJsonModule": true,
     "skipLibCheck": true
