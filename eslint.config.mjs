@@ -47,6 +47,12 @@ export default defineConfig([
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     }
   },
+  { // crypto-rpc Tier 1 TS conversion uses @ts-nocheck as a deliberate strategy
+    files: ['packages/crypto-rpc/**/*.ts'],
+    rules: {
+      '@typescript-eslint/ban-ts-comment': 'off',
+    }
+  },
   {
     plugins: {
       '@stylistic': stylistic,
