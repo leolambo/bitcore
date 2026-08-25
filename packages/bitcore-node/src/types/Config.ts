@@ -140,6 +140,10 @@ export interface ConfigType {
       sleepMs?: number; // throttle: pause length between batches
       every?: number; // throttle: pause every N wallets
       maxRetryMs?: number; // rate-limit retry: give up on one call after this long, default 10min
+      api?: {
+        disabled?: boolean;
+        authKeys?: Array<string>; // hex pubkeys allowed to sign requests
+      };
     };
   };
   externalProviders?: {
