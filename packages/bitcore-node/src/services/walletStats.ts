@@ -210,16 +210,9 @@ export class WalletStatsService {
     // (unconfirmed) wallets max out negative. Resolve heights via a single bounded
     // range scan of the block index rather than a giant height:{$in:[...]} doc,
     // and skip the scan entirely when nothing confirmed needs a date.
-    const heightToDate = new Map<number, Date>();
-    if (rows.some(row => row.maxHeight >= sinceHeight)) {
-      const blocks = await this.blockModel.collection
-        .find({ chain, network, height: { $gte: sinceHeight } })
-        .project({ height: 1, timeNormalized: 1 })
-        .toArray();
-      for (const block of blocks) {
-        heightToDate.set(block.height, block.timeNormalized);
-      }
-    }
+    const heightToDate = rows.some(row => row.maxHeight >= sinceHeight)
+      ? await this.blockTimesByHeight({ chain, network, fromHeight: sinceHeight })
+      : new Map<number, Date>();
 
     for (const row of rows) {
       const date = heightToDate.get(row.maxHeight);
@@ -749,6 +742,100 @@ export class WalletStatsService {
       .limit(1)
       .toArray();
     return block ? block.height : null;
+  }
+
+  // Block times for a height range, as one bounded scan of the block index rather
+  // than a height:{$in:[...]} document big enough to trip the 16MB doc limit.
+  private async blockTimesByHeight(params: {
+    chain: string;
+    network: string;
+    fromHeight: number;
+    toHeight?: number;
+  }): Promise<Map<number, Date>> {
+    const { chain, network, fromHeight, toHeight } = params;
+    const height: { $gte: number; $lte?: number } = { $gte: fromHeight };
+    if (toHeight !== undefined) {
+      height.$lte = toHeight;
+    }
+    const blocks = await this.blockModel.collection
+      .find({ chain, network, height })
+      .project({ height: 1, timeNormalized: 1 })
+      .toArray();
+    const heightToDate = new Map<number, Date>();
+    for (const block of blocks) {
+      heightToDate.set(block.height, block.timeNormalized);
+    }
+    return heightToDate;
+  }
+
+  // Last-activity dates as they stood at a past date: the newest mint or spend per
+  // wallet inside [windowStart, date]. Unlike the live path this needs an upper
+  // bound as well as a lower one, and the bound has to be applied per height rather
+  // than per coin — a coin minted inside the window but spent long after it is
+  // activity AT ITS MINT, and a plain $max of the two heights would report a spend
+  // that had not happened yet on the date being reconstructed.
+  async collectUtxoActivityAt(params: {
+    chain: string;
+    network: string;
+    date: string;
+    windowStart: Date;
+  }): Promise<Map<string, Date>> {
+    const { chain, network, date, windowStart } = params;
+    const activity = new Map<string, Date>();
+
+    const [startBlock] = await this.blockModel.collection
+      .find({ chain, network, timeNormalized: { $gte: windowStart } })
+      .project({ height: 1 })
+      .sort({ timeNormalized: 1 })
+      .limit(1)
+      .toArray();
+    if (!startBlock) {
+      return activity; // no blocks in the window => nothing counts as recent
+    }
+    const fromHeight = startBlock.height;
+
+    const toHeight = await this.heightAt({ chain, network, date });
+    if (toHeight === null || toHeight < fromHeight) {
+      return activity;
+    }
+
+    const inWindow = (field: string) => ({
+      $cond: [{ $and: [{ $gte: [field, fromHeight] }, { $lte: [field, toHeight] }] }, field, -1]
+    });
+    const rows = await this.coinModel.collection
+      .aggregate<{ _id: any; maxHeight: number }>(
+        [
+          {
+            $match: {
+              chain,
+              network,
+              'wallets.0': { $exists: true },
+              $or: [
+                { mintHeight: { $gte: fromHeight, $lte: toHeight } },
+                { spentHeight: { $gte: fromHeight, $lte: toHeight } }
+              ]
+            }
+          },
+          { $project: { wallets: 1, activityHeight: { $max: [inWindow('$mintHeight'), inWindow('$spentHeight')] } } },
+          { $match: { activityHeight: { $gte: fromHeight } } },
+          { $unwind: '$wallets' },
+          { $group: { _id: '$wallets', maxHeight: { $max: '$activityHeight' } } }
+        ],
+        { allowDiskUse: true }
+      )
+      .toArray();
+    if (!rows.length) {
+      return activity;
+    }
+
+    const heightToDate = await this.blockTimesByHeight({ chain, network, fromHeight, toHeight });
+    for (const row of rows) {
+      const when = heightToDate.get(row.maxHeight);
+      if (when) {
+        activity.set(row._id.toString(), when);
+      }
+    }
+    return activity;
   }
 
   // Weekly schedule days within [from, to], anchored the same way the interval

@@ -839,6 +839,118 @@ describe('WalletStats Service', function() {
     });
   });
 
+  describe('collectUtxoActivityAt', () => {
+    const cursorOf = (rows: any[]) => {
+      const c: any = { project: () => c, sort: () => c, limit: () => c, toArray: async () => rows };
+      return c;
+    };
+
+    // find() answers three different questions in order: window-start height,
+    // as-of height, then the block range scan.
+    const makeSvc = (over: any = {}) => {
+      const aggregate = sandbox.stub().returns(cursorOf(over.coinRows ?? []));
+      const find = sandbox.stub();
+      find.onCall(0).returns(cursorOf(over.startBlock ?? [{ height: 700000 }]));
+      find.onCall(1).returns(cursorOf(over.asOfBlock ?? [{ height: 800000 }]));
+      find.onCall(2).returns(cursorOf(over.blocks ?? []));
+      const service = new WalletStatsService({
+        coinModel: { collection: { aggregate } },
+        blockModel: { collection: { find } },
+        configService: { for: () => ({}), isDisabled: () => false }
+      } as any);
+      return { service, aggregate, find };
+    };
+
+    const call = (service: any) =>
+      service.collectUtxoActivityAt({
+        chain: 'BTC',
+        network: 'mainnet',
+        date: '2026-08-03',
+        windowStart: new Date('2025-08-03T00:00:00Z')
+      });
+
+    it('bounds the window by the first block in it and the last block by the date', async () => {
+      const { service, find } = makeSvc();
+      await call(service);
+      expect(find.getCall(0).args[0]).to.deep.equal({
+        chain: 'BTC',
+        network: 'mainnet',
+        timeNormalized: { $gte: new Date('2025-08-03T00:00:00Z') }
+      });
+      expect(find.getCall(1).args[0]).to.deep.equal({
+        chain: 'BTC',
+        network: 'mainnet',
+        timeNormalized: { $lte: new Date('2026-08-03T00:00:00Z') }
+      });
+    });
+
+    it('ignores activity that happened after the date being reconstructed', async () => {
+      const { service, aggregate } = makeSvc();
+      await call(service);
+      const [pipeline] = aggregate.firstCall.args;
+      const projected = pipeline.find((stage: any) => stage.$project);
+      // A coin minted inside the window but spent long after it must contribute its
+      // MINT height, not its spend; a plain $max of the two would read the future.
+      expect(projected.$project.activityHeight).to.deep.equal({
+        $max: [
+          { $cond: [{ $and: [{ $gte: ['$mintHeight', 700000] }, { $lte: ['$mintHeight', 800000] }] }, '$mintHeight', -1] },
+          { $cond: [{ $and: [{ $gte: ['$spentHeight', 700000] }, { $lte: ['$spentHeight', 800000] }] }, '$spentHeight', -1] }
+        ]
+      });
+    });
+
+    it('keeps only wallets with activity inside the window, and takes their latest', async () => {
+      const { service, aggregate } = makeSvc();
+      await call(service);
+      const [pipeline] = aggregate.firstCall.args;
+      expect(pipeline.some((stage: any) => stage.$match?.activityHeight?.$gte === 700000)).to.equal(true);
+      const grouped = pipeline.find((stage: any) => stage.$group);
+      expect(grouped.$group).to.deep.equal({ _id: '$wallets', maxHeight: { $max: '$activityHeight' } });
+    });
+
+    it('dates each wallet by the block its latest activity landed in', async () => {
+      const wallet = new ObjectID();
+      const when = new Date('2026-07-20T04:00:00Z');
+      const { service } = makeSvc({
+        coinRows: [{ _id: wallet, maxHeight: 750000 }],
+        blocks: [{ height: 750000, timeNormalized: when }]
+      });
+      const activity = await call(service);
+      expect(activity.get(wallet.toString())).to.deep.equal(when);
+    });
+
+    it('scans only the blocks inside the window when resolving heights', async () => {
+      const { service, find } = makeSvc({ coinRows: [{ _id: new ObjectID(), maxHeight: 750000 }] });
+      await call(service);
+      expect(find.getCall(2).args[0]).to.deep.equal({
+        chain: 'BTC',
+        network: 'mainnet',
+        height: { $gte: 700000, $lte: 800000 }
+      });
+    });
+
+    it('skips the block scan when no wallet was active', async () => {
+      const { service, find } = makeSvc({ coinRows: [] });
+      const activity = await call(service);
+      expect(activity.size).to.equal(0);
+      expect(find.callCount).to.equal(2);
+    });
+
+    it('returns nothing when the window has no blocks at all', async () => {
+      const { service, aggregate } = makeSvc({ startBlock: [] });
+      const activity = await call(service);
+      expect(activity.size).to.equal(0);
+      expect(aggregate.called).to.equal(false);
+    });
+
+    it('returns nothing when the chain had no blocks by that date', async () => {
+      const { service, aggregate } = makeSvc({ asOfBlock: [] });
+      const activity = await call(service);
+      expect(activity.size).to.equal(0);
+      expect(aggregate.called).to.equal(false);
+    });
+  });
+
   describe('defaultCheckTokenActivity', () => {
     const makeSvc = (apiKey?: string) => new WalletStatsService({
       configService: {
