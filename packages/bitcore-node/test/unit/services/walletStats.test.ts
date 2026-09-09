@@ -774,6 +774,71 @@ describe('WalletStats Service', function() {
     });
   });
 
+  describe('collectUtxoBalancesAt', () => {
+    const cursorOf = (rows: any[]) => {
+      const c: any = { project: () => c, sort: () => c, limit: () => c, toArray: async () => rows };
+      return c;
+    };
+
+    const makeSvc = (over: any = {}) => {
+      const aggregate = sandbox.stub().returns(cursorOf(over.coinRows ?? []));
+      const find = sandbox.stub().returns(cursorOf(over.blockRows ?? [{ height: 800000 }]));
+      const service = new WalletStatsService({
+        coinModel: { collection: { aggregate } },
+        blockModel: { collection: { find } },
+        configService: { for: () => ({}), isDisabled: () => false }
+      } as any);
+      return { service, aggregate, find };
+    };
+
+    it('cuts off at the last block on or before the date, as getBalanceAtTime does', async () => {
+      const { service, find } = makeSvc();
+      await service.collectUtxoBalancesAt({ chain: 'BTC', network: 'mainnet', date: '2026-08-03' });
+      expect(find.firstCall.args[0]).to.deep.equal({
+        chain: 'BTC',
+        network: 'mainnet',
+        timeNormalized: { $lte: new Date('2026-08-03T00:00:00Z') }
+      });
+    });
+
+    it('counts coins minted by that height and not yet spent at it', async () => {
+      const { service, aggregate } = makeSvc({ blockRows: [{ height: 800000 }] });
+      await service.collectUtxoBalancesAt({ chain: 'BTC', network: 'mainnet', date: '2026-08-03' });
+      const [pipeline, options] = aggregate.firstCall.args;
+      expect(pipeline[0].$match).to.deep.equal({
+        chain: 'BTC',
+        network: 'mainnet',
+        'wallets.0': { $exists: true },
+        mintHeight: { $gte: 0, $lte: 800000 },
+        $or: [{ spentHeight: { $gt: 800000 } }, { spentHeight: { $lt: 0 } }]
+      });
+      expect(options.hint).to.deep.equal({ wallets: 1, spentHeight: 1, value: 1, mintHeight: 1 });
+      expect(options.allowDiskUse).to.equal(true);
+    });
+
+    it('unwinds shared coins and sums per wallet', async () => {
+      const { service, aggregate } = makeSvc();
+      await service.collectUtxoBalancesAt({ chain: 'BTC', network: 'mainnet', date: '2026-08-03' });
+      const [pipeline] = aggregate.firstCall.args;
+      expect(pipeline[1]).to.deep.equal({ $unwind: '$wallets' });
+      expect(pipeline[2]).to.deep.equal({ $group: { _id: '$wallets', balance: { $sum: '$value' } } });
+    });
+
+    it('returns balances keyed by wallet id', async () => {
+      const wallet = new ObjectID();
+      const { service } = makeSvc({ coinRows: [{ _id: wallet, balance: 4200 }] });
+      const balances = await service.collectUtxoBalancesAt({ chain: 'BTC', network: 'mainnet', date: '2026-08-03' });
+      expect(balances.get(wallet.toString())).to.equal(BigInt(4200));
+    });
+
+    it('returns nothing when the chain had no blocks yet at that date', async () => {
+      const { service, aggregate } = makeSvc({ blockRows: [] });
+      const balances = await service.collectUtxoBalancesAt({ chain: 'BTC', network: 'mainnet', date: '2015-01-01' });
+      expect(balances.size).to.equal(0);
+      expect(aggregate.called).to.equal(false);
+    });
+  });
+
   describe('defaultCheckTokenActivity', () => {
     const makeSvc = (apiKey?: string) => new WalletStatsService({
       configService: {

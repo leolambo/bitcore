@@ -691,6 +691,66 @@ export class WalletStatsService {
     return { snapshot, walletFacts };
   }
 
+  // Per-wallet balances as they stood at a past date. Mirrors the cutoff semantics
+  // of CoinModel.getBalanceAtTime: find the last block at or before the date, then
+  // count coins minted by that height and not yet spent at it. A spentHeight below
+  // the sentinel minimum means unspent or spent-in-mempool, which for a historical
+  // view reads the same way — it was not spent by height H.
+  //
+  // One deliberate difference from getBalanceAtTime: mints must be CONFIRMED
+  // (mintHeight >= 0). Sentinel mint heights are today's mempool, and attributing
+  // coins pending now to a date months ago would inflate that date's balance.
+  async collectUtxoBalancesAt(params: { chain: string; network: string; date: string }): Promise<Map<string, bigint>> {
+    const { chain, network, date } = params;
+    const balances = new Map<string, bigint>();
+
+    const height = await this.heightAt({ chain, network, date });
+    if (height === null) {
+      return balances; // chain had no blocks yet; nothing to count
+    }
+
+    const rows = await this.coinModel.collection
+      .aggregate<{ _id: any; balance: number }>(
+        [
+          {
+            $match: {
+              chain,
+              network,
+              'wallets.0': { $exists: true },
+              mintHeight: { $gte: 0, $lte: height },
+              $or: [
+                { spentHeight: { $gt: height } },
+                { spentHeight: { $lt: SpentHeightIndicators.minimum } }
+              ]
+            }
+          },
+          { $unwind: '$wallets' },
+          { $group: { _id: '$wallets', balance: { $sum: '$value' } } }
+        ],
+        // Same hint getBalanceAtTime uses; our $match carries the partial index's
+        // predicate ('wallets.0' exists) so it stays valid.
+        { allowDiskUse: true, hint: { wallets: 1, spentHeight: 1, value: 1, mintHeight: 1 } }
+      )
+      .toArray();
+    for (const row of rows) {
+      balances.set(row._id.toString(), BigInt(row.balance));
+    }
+    return balances;
+  }
+
+  // Height of the last block at or before the start of `date`, or null when the
+  // chain had no blocks yet. The cutoff getBalanceAtTime uses for "as of".
+  async heightAt(params: { chain: string; network: string; date: string }): Promise<number | null> {
+    const { chain, network, date } = params;
+    const [block] = await this.blockModel.collection
+      .find({ chain, network, timeNormalized: { $lte: new Date(`${date}T00:00:00Z`) } })
+      .project({ height: 1 })
+      .sort({ timeNormalized: -1 })
+      .limit(1)
+      .toArray();
+    return block ? block.height : null;
+  }
+
   // Weekly schedule days within [from, to], anchored the same way the interval
   // service anchors its snapshots, so backfilled dates land in the same series
   // rather than a parallel one offset by whatever day the range happens to start
