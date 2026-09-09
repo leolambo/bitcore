@@ -691,6 +691,71 @@ export class WalletStatsService {
     return { snapshot, walletFacts };
   }
 
+  // Weekly schedule days within [from, to], anchored the same way the interval
+  // service anchors its snapshots, so backfilled dates land in the same series
+  // rather than a parallel one offset by whatever day the range happens to start
+  // on. `from` rounds FORWARD to the first schedule day on or after it.
+  backfillDates(from: string, to: string): string[] {
+    const { targetDay } = this.getSchedule();
+    const dates: string[] = [];
+    const cursor = new Date(`${from}T00:00:00Z`);
+    if (isNaN(cursor.getTime()) || from > to) {
+      return dates;
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + ((targetDay - cursor.getUTCDay() + 7) % 7));
+    for (;;) {
+      const date = cursor.toISOString().split('T')[0];
+      if (date > to) {
+        return dates;
+      }
+      dates.push(date);
+      cursor.setUTCDate(cursor.getUTCDate() + 7);
+    }
+  }
+
+  // Point lookup on the unique {chain, network, date} index.
+  async snapshotExists(chain: string, network: string, date: string): Promise<boolean> {
+    const found = await this.walletStatsModel.collection.findOne({ chain, network, date });
+    return !!found;
+  }
+
+  // Backfill's write path. Facts upsert exactly as the interval path does — their
+  // unique key makes a re-run idempotent — but the snapshot is insert-if-absent:
+  // reconstructing history must never rewrite a snapshot taken live, which is the
+  // authoritative one. buildSnapshot is shared with the interval path and stamps
+  // every snapshot 'interval', so the source is corrected here at the one place
+  // every backfill write passes through.
+  async persistBackfill(params: {
+    chain: string;
+    network: string;
+    snapshot: IWalletStats;
+    walletFacts: IWalletStatsWallet[];
+    partial?: string[];
+  }) {
+    const { chain, network, snapshot, walletFacts, partial } = params;
+    if (walletFacts.length) {
+      await this.walletStatsWalletModel.collection.bulkWrite(
+        walletFacts.map(fact => ({
+          updateOne: {
+            filter: { chain, network, snapshotDate: fact.snapshotDate, wallet: fact.wallet },
+            update: { $set: fact },
+            upsert: true
+          }
+        })),
+        { ordered: false }
+      );
+    }
+    const toInsert: IWalletStats = {
+      ...snapshot,
+      meta: { ...snapshot.meta, source: 'backfill', ...(partial?.length ? { partial } : {}) }
+    };
+    await this.walletStatsModel.collection.updateOne(
+      { chain, network, date: snapshot.date },
+      { $setOnInsert: toInsert },
+      { upsert: true }
+    );
+  }
+
   async persist(params: { chain: string; network: string; snapshot: IWalletStats; walletFacts: IWalletStatsWallet[] }) {
     const { chain, network, snapshot, walletFacts } = params;
     if (walletFacts.length) {

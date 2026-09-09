@@ -594,6 +594,186 @@ describe('WalletStats Service', function() {
     });
   });
 
+  describe('backfillDates', () => {
+    // Mondays in Aug 2026: 3, 10, 17, 24, 31.
+    const svc = (serviceConfig: any = {}) =>
+      new WalletStatsService({ configService: { for: () => serviceConfig, isDisabled: () => false } } as any);
+
+    it('lists the weekly schedule days across the range', () => {
+      expect(svc().backfillDates('2026-08-03', '2026-08-24')).to.deep.equal([
+        '2026-08-03',
+        '2026-08-10',
+        '2026-08-17',
+        '2026-08-24'
+      ]);
+    });
+
+    it('rounds a mid-week start forward to the first schedule day', () => {
+      expect(svc().backfillDates('2026-08-05', '2026-08-17')).to.deep.equal(['2026-08-10', '2026-08-17']);
+    });
+
+    it('stops before a to-date that is not itself a schedule day', () => {
+      expect(svc().backfillDates('2026-08-03', '2026-08-13')).to.deep.equal(['2026-08-03', '2026-08-10']);
+    });
+
+    it('returns nothing when the range contains no schedule day', () => {
+      expect(svc().backfillDates('2026-08-04', '2026-08-09')).to.deep.equal([]);
+    });
+
+    it('returns nothing when the range is inverted', () => {
+      expect(svc().backfillDates('2026-08-24', '2026-08-03')).to.deep.equal([]);
+    });
+
+    it('follows a configured schedule day rather than assuming Monday', () => {
+      expect(svc({ snapshotDayUTC: 3 }).backfillDates('2026-08-03', '2026-08-19')).to.deep.equal([
+        '2026-08-05',
+        '2026-08-12',
+        '2026-08-19'
+      ]);
+    });
+
+    it('lands on the same weekday the interval service would pick, so the series interleave', () => {
+      const service = svc();
+      const dates = service.backfillDates('2026-07-01', '2026-08-24');
+      const live = service.snapshotDateIfDue(new Date('2026-08-26T12:00:00Z'), null);
+      const weekday = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay();
+      expect(dates.length).to.be.greaterThan(0);
+      expect(dates.every(d => weekday(d) === weekday(live!))).to.equal(true);
+    });
+
+    it('spans a year boundary without drifting off the schedule day', () => {
+      expect(svc().backfillDates('2025-12-22', '2026-01-12')).to.deep.equal([
+        '2025-12-22',
+        '2025-12-29',
+        '2026-01-05',
+        '2026-01-12'
+      ]);
+    });
+  });
+
+  describe('snapshotExists', () => {
+    const svcWith = (findOne: any) =>
+      new WalletStatsService({
+        walletStatsModel: { collection: { findOne } },
+        configService: { for: () => ({}), isDisabled: () => false }
+      } as any);
+
+    it('is true when the snapshot is already there', async () => {
+      const findOne = sandbox.stub().resolves({ _id: new ObjectID() });
+      const exists = await svcWith(findOne).snapshotExists('BTC', 'mainnet', '2026-08-03');
+      expect(exists).to.equal(true);
+      expect(findOne.calledOnceWith({ chain: 'BTC', network: 'mainnet', date: '2026-08-03' })).to.equal(true);
+    });
+
+    it('is false when it is absent', async () => {
+      expect(await svcWith(sandbox.stub().resolves(null)).snapshotExists('BTC', 'mainnet', '2026-08-03')).to.equal(
+        false
+      );
+    });
+  });
+
+  describe('persistBackfill', () => {
+    const makeBackfillDeps = () => {
+      const updateOne = sandbox.stub().resolves();
+      const bulkWrite = sandbox.stub().resolves();
+      const service = new WalletStatsService({
+        walletStatsModel: { collection: { updateOne } },
+        walletStatsWalletModel: { collection: { bulkWrite } },
+        configService: { for: () => ({}), isDisabled: () => false }
+      } as any);
+      return { service, updateOne, bulkWrite };
+    };
+
+    const snapshotFor = (date: string) => WalletStatsStorage.newSnapshot({ chain: 'BTC', network: 'mainnet', date });
+
+    it('inserts the snapshot only when it is absent', async () => {
+      const { service, updateOne } = makeBackfillDeps();
+      await service.persistBackfill({
+        chain: 'BTC',
+        network: 'mainnet',
+        snapshot: snapshotFor('2026-08-03'),
+        walletFacts: []
+      });
+      const [filter, update, options] = updateOne.firstCall.args;
+      expect(filter).to.deep.equal({ chain: 'BTC', network: 'mainnet', date: '2026-08-03' });
+      expect(options).to.deep.equal({ upsert: true });
+      // The whole point: an existing snapshot, interval or backfill, must survive untouched.
+      expect(Object.keys(update)).to.deep.equal(['$setOnInsert']);
+      expect(update.$set).to.equal(undefined);
+    });
+
+    it('stamps the snapshot as backfilled', async () => {
+      const { service, updateOne } = makeBackfillDeps();
+      const snapshot = snapshotFor('2026-08-03');
+      expect(snapshot.meta.source).to.equal('interval');
+      await service.persistBackfill({ chain: 'BTC', network: 'mainnet', snapshot, walletFacts: [] });
+      expect(updateOne.firstCall.args[1].$setOnInsert.meta.source).to.equal('backfill');
+    });
+
+    it('records which counters a partial snapshot is missing', async () => {
+      const { service, updateOne } = makeBackfillDeps();
+      await service.persistBackfill({
+        chain: 'BTC',
+        network: 'mainnet',
+        snapshot: snapshotFor('2026-08-03'),
+        walletFacts: [],
+        partial: ['balances']
+      });
+      expect(updateOne.firstCall.args[1].$setOnInsert.meta.partial).to.deep.equal(['balances']);
+    });
+
+    it('leaves meta.partial off a complete snapshot', async () => {
+      const { service, updateOne } = makeBackfillDeps();
+      await service.persistBackfill({
+        chain: 'BTC',
+        network: 'mainnet',
+        snapshot: snapshotFor('2026-08-03'),
+        walletFacts: []
+      });
+      expect(updateOne.firstCall.args[1].$setOnInsert.meta.partial).to.equal(undefined);
+    });
+
+    it('upserts the per-wallet facts, which are keyed to be idempotent', async () => {
+      const { service, bulkWrite } = makeBackfillDeps();
+      const wallet = new ObjectID();
+      await service.persistBackfill({
+        chain: 'BTC',
+        network: 'mainnet',
+        snapshot: snapshotFor('2026-08-03'),
+        walletFacts: [
+          {
+            wallet,
+            chain: 'BTC',
+            network: 'mainnet',
+            snapshotDate: '2026-08-03',
+            createdDate: new Date('2026-01-01T00:00:00Z'),
+            balance: '10',
+            isDup: false
+          }
+        ]
+      });
+      const [ops] = bulkWrite.firstCall.args;
+      expect(ops[0].updateOne.filter).to.deep.equal({
+        chain: 'BTC',
+        network: 'mainnet',
+        snapshotDate: '2026-08-03',
+        wallet
+      });
+      expect(ops[0].updateOne.upsert).to.equal(true);
+    });
+
+    it('skips the fact write when there are no facts', async () => {
+      const { service, bulkWrite } = makeBackfillDeps();
+      await service.persistBackfill({
+        chain: 'BTC',
+        network: 'mainnet',
+        snapshot: snapshotFor('2026-08-03'),
+        walletFacts: []
+      });
+      expect(bulkWrite.called).to.equal(false);
+    });
+  });
+
   describe('defaultCheckTokenActivity', () => {
     const makeSvc = (apiKey?: string) => new WalletStatsService({
       configService: {
