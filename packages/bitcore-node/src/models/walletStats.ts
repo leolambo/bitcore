@@ -30,6 +30,7 @@ export interface IWalletStats {
     erroredWalletCnt: number;
     source: 'interval' | 'backfill';
     gaps?: string[]; // scheduled snapshot dates skipped before this run
+    partial?: string[]; // counters this snapshot could not reconstruct (backfill)
   };
 }
 
