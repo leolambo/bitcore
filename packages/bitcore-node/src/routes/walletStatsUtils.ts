@@ -1,8 +1,8 @@
 import { Response } from 'express';
 import logger from '../logger';
 import { CacheStorage } from '../models/cache';
+import { isYyyyMmDd } from '../utils/date';
 
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const IDENTIFIER = /^[A-Za-z0-9_-]{1,20}$/;
 const BROWSER_CACHE_SECONDS = 300;
 
@@ -64,7 +64,7 @@ function parseValue(name: string, raw: string, rule: ParamRule): { value?: any; 
       }
       return { value: raw.toUpperCase() };
     case 'date':
-      if (!DATE.test(raw) || !isRealDate(raw)) {
+      if (!isYyyyMmDd(raw)) {
         return { error: `Invalid ${name} date, expected YYYY-MM-DD` };
       }
       return { value: raw };
@@ -97,19 +97,6 @@ function parseValue(name: string, raw: string, rule: ParamRule): { value?: any; 
       return { value };
     }
   }
-}
-
-/**
- * A well formed YYYY-MM-DD can still be a day that never happened (2026-02-30).
- * Round-trip the components through a UTC date to catch those; UTC throughout so
- * the answer does not depend on where the node runs.
- */
-function isRealDate(raw: string) {
-  const [year, month, day] = raw.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return (
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-  );
 }
 
 function isPositiveFinite(value: number) {
