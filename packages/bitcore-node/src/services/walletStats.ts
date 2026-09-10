@@ -903,6 +903,70 @@ export class WalletStatsService {
     );
   }
 
+  // Reconstruct a UTXO chain's snapshots for the given dates, oldest first. Dates
+  // that already have a snapshot are left alone, and a date that fails is logged
+  // and counted rather than abandoning the rest of the range.
+  async backfillUtxoChain(params: {
+    chain: string;
+    network: string;
+    dates: string[];
+  }): Promise<{ written: number; skipped: number; errored: number }> {
+    const { chain, network } = params;
+    const dates = [...params.dates].sort();
+    const summary = { written: 0, skipped: 0, errored: 0 };
+    if (!dates.length) {
+      return summary;
+    }
+
+    const allWallets = (await this.walletModel.collection.find({ chain, network }).toArray()) as Array<{
+      _id: ObjectID;
+    }>;
+    // Duplicate verdicts describe the wallets themselves, not any point in time, so
+    // one pass covers every date in the range.
+    const dups = await this.detectDups({ chain, network, wallets: allWallets });
+    const sleepMs = this.serviceConfig.sleepMs ?? 50;
+
+    for (const date of dates) {
+      if (this.stopping) {
+        break;
+      }
+      try {
+        if (await this.snapshotExists(chain, network, date)) {
+          summary.skipped++;
+          continue;
+        }
+        const asOf = new Date(`${date}T00:00:00Z`);
+        // buildSnapshot counts every wallet it is handed. Live that is right, because
+        // every wallet exists as of now; reconstructing a past date it is not, so the
+        // population is cut back to the wallets that existed then. Without this every
+        // historical snapshot would report today's wallet count.
+        const wallets = allWallets.filter(wallet => wallet._id.getTimestamp() < asOf);
+        const windowStart = new Date(asOf.getTime());
+        windowStart.setUTCFullYear(windowStart.getUTCFullYear() - 1);
+
+        const balances = await this.collectUtxoBalancesAt({ chain, network, date });
+        const activity = await this.collectUtxoActivityAt({ chain, network, date, windowStart });
+        const { snapshot, walletFacts } = this.buildSnapshot({
+          chain,
+          network,
+          date,
+          wallets,
+          balances,
+          activity,
+          dups
+        });
+        snapshot.meta.completedAt = new Date(this.nowFn());
+        await this.persistBackfill({ chain, network, snapshot, walletFacts });
+        summary.written++;
+      } catch (err: any) {
+        summary.errored++;
+        logger.error(`Wallet Stats backfill error for ${chain}:${network} ${date}: ${err.stack || err.message || err}`);
+      }
+      await this.waitFn(sleepMs);
+    }
+    return summary;
+  }
+
   async persist(params: { chain: string; network: string; snapshot: IWalletStats; walletFacts: IWalletStatsWallet[] }) {
     const { chain, network, snapshot, walletFacts } = params;
     if (walletFacts.length) {

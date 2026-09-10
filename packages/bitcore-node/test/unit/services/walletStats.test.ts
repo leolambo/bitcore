@@ -951,6 +951,127 @@ describe('WalletStats Service', function() {
     });
   });
 
+  describe('backfillUtxoChain', () => {
+    const NOW = new Date('2026-08-31T00:00:00Z');
+    // ObjectIDs carry their creation time, which is how buildSnapshot dates a wallet.
+    const walletCreatedAt = (iso: string) => ({ _id: ObjectID.createFromTime(new Date(iso).getTime() / 1000) });
+
+    const makeSvc = (over: any = {}) => {
+      const wallets = over.wallets ?? [walletCreatedAt('2025-01-01T00:00:00Z')];
+      const cursor: any = { project: () => cursor, sort: () => cursor, limit: () => cursor, toArray: async () => wallets };
+      const waitFn = sandbox.stub().resolves();
+      const service = new WalletStatsService({
+        walletModel: { collection: { find: () => cursor } },
+        walletStatsModel: { collection: {}, newSnapshot: (p: any) => WalletStatsStorage.newSnapshot(p) },
+        walletStatsWalletModel: {
+          collection: {},
+          activityWindow: (d: any, asOf: any) => WalletStatsWalletStorage.activityWindow(d, asOf)
+        },
+        configService: { for: () => over.serviceConfig ?? {}, isDisabled: () => false },
+        nowFn: () => NOW.getTime(),
+        waitFn
+      } as any);
+      const exists = sandbox.stub(service, 'snapshotExists').resolves(false);
+      const balances = sandbox.stub(service, 'collectUtxoBalancesAt').resolves(new Map());
+      const activity = sandbox.stub(service, 'collectUtxoActivityAt').resolves(new Map());
+      const dups = sandbox.stub(service, 'detectDups').resolves(new Set());
+      const persist = sandbox.stub(service, 'persistBackfill').resolves();
+      return { service, exists, balances, activity, dups, persist, waitFn };
+    };
+
+    const run = (service: any, dates: string[]) =>
+      service.backfillUtxoChain({ chain: 'BTC', network: 'mainnet', dates });
+
+    it('works through the dates oldest first', async () => {
+      const { service, persist } = makeSvc();
+      await run(service, ['2026-08-17', '2026-08-03', '2026-08-10']);
+      expect(persist.getCalls().map(c => c.args[0].snapshot.date)).to.deep.equal([
+        '2026-08-03',
+        '2026-08-10',
+        '2026-08-17'
+      ]);
+    });
+
+    it('leaves a date that already has a snapshot completely alone', async () => {
+      const { service, exists, balances, persist } = makeSvc();
+      exists.withArgs('BTC', 'mainnet', '2026-08-03').resolves(true);
+      const summary = await run(service, ['2026-08-03', '2026-08-10']);
+      expect(balances.getCalls().map(c => c.args[0].date)).to.deep.equal(['2026-08-10']);
+      expect(persist.callCount).to.equal(1);
+      expect(summary).to.deep.equal({ written: 1, skipped: 1, errored: 0 });
+    });
+
+    it('counts only the wallets that existed on the date being reconstructed', async () => {
+      const { service, persist } = makeSvc({
+        wallets: [walletCreatedAt('2025-01-01T00:00:00Z'), walletCreatedAt('2026-08-20T00:00:00Z')]
+      });
+      await run(service, ['2026-08-03']);
+      // The second wallet was created after this date; counting it would make every
+      // historical snapshot report today's wallet count.
+      const { snapshot, walletFacts } = persist.firstCall.args[0];
+      expect(snapshot.walletCntTotal).to.equal('1');
+      expect(walletFacts).to.have.lengthOf(1);
+    });
+
+    it('looks back twelve months for activity on each date', async () => {
+      const { service, activity } = makeSvc();
+      await run(service, ['2026-08-03']);
+      expect(activity.firstCall.args[0].windowStart).to.deep.equal(new Date('2025-08-03T00:00:00Z'));
+    });
+
+    it('writes through the insert-if-absent path', async () => {
+      const { service, persist } = makeSvc();
+      await run(service, ['2026-08-03']);
+      expect(persist.calledOnce).to.equal(true);
+      expect(persist.firstCall.args[0].chain).to.equal('BTC');
+    });
+
+    it('stamps when the snapshot was reconstructed', async () => {
+      const { service, persist } = makeSvc();
+      await run(service, ['2026-08-03']);
+      expect(persist.firstCall.args[0].snapshot.meta.completedAt).to.deep.equal(NOW);
+    });
+
+    it('detects duplicates once for the whole run, since the verdict does not move', async () => {
+      const { service, dups } = makeSvc();
+      await run(service, ['2026-08-03', '2026-08-10', '2026-08-17']);
+      expect(dups.callCount).to.equal(1);
+    });
+
+    it('carries on to the next date when one date fails', async () => {
+      const { service, balances, persist } = makeSvc();
+      balances.withArgs(sinon.match({ date: '2026-08-03' })).rejects(new Error('aggregation blew up'));
+      const summary = await run(service, ['2026-08-03', '2026-08-10']);
+      expect(persist.getCalls().map(c => c.args[0].snapshot.date)).to.deep.equal(['2026-08-10']);
+      expect(summary).to.deep.equal({ written: 1, skipped: 0, errored: 1 });
+    });
+
+    it('stops cleanly when a shutdown is requested mid-run', async () => {
+      const { service, persist } = makeSvc();
+      (service as any).collectUtxoBalancesAt.callsFake(async () => {
+        service.stopping = true;
+        return new Map();
+      });
+      await run(service, ['2026-08-03', '2026-08-10']);
+      expect(persist.callCount).to.equal(1); // the in-flight date finishes, the next never starts
+    });
+
+    it('throttles between dates', async () => {
+      const { service, waitFn } = makeSvc({ serviceConfig: { sleepMs: 250 } });
+      await run(service, ['2026-08-03', '2026-08-10']);
+      expect(waitFn.called).to.equal(true);
+      expect(waitFn.firstCall.args[0]).to.equal(250);
+    });
+
+    it('does nothing at all when given no dates', async () => {
+      const { service, persist, dups } = makeSvc();
+      const summary = await run(service, []);
+      expect(persist.called).to.equal(false);
+      expect(dups.called).to.equal(false);
+      expect(summary).to.deep.equal({ written: 0, skipped: 0, errored: 0 });
+    });
+  });
+
   describe('defaultCheckTokenActivity', () => {
     const makeSvc = (apiKey?: string) => new WalletStatsService({
       configService: {
