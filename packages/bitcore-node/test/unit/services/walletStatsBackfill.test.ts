@@ -4,7 +4,9 @@ import * as sinon from 'sinon';
 import { WalletStatsStorage } from '../../../src/models/walletStats';
 import { WalletStatsWalletStorage } from '../../../src/models/walletStatsWallet';
 import { WalletStatsService } from '../../../src/services/walletStats';
-import { WalletStatsBackfiller } from '../../../src/services/walletStatsBackfill';
+import { lastActivityAt, MAX_HISTORY_PAGES, WalletStatsBackfiller } from '../../../src/services/walletStatsBackfill';
+import axios from 'axios';
+import logger from '../../../src/logger';
 
 /** Chainable cursor: find().project().sort().limit().toArray() all resolve to rows. */
 const cursorOf = (rows: any[]) => {
@@ -385,6 +387,267 @@ describe('WalletStats Backfiller', function() {
       const activity = await call(service);
       expect(activity.size).to.equal(0);
       expect(aggregate.called).to.equal(false);
+    });
+  });
+
+  describe('lastActivityAt', () => {
+    const stamps = ['2026-01-15', '2026-05-20', '2026-07-30'].map(d => new Date(`${d}T00:00:00Z`));
+    const asOf = (d: string) => new Date(`${d}T00:00:00Z`);
+    const windowFor = (d: string) => {
+      const start = asOf(d);
+      start.setUTCFullYear(start.getUTCFullYear() - 1);
+      return start;
+    };
+
+    it('takes the newest transfer at or before the date', () => {
+      expect(lastActivityAt(stamps, asOf('2026-08-03'), windowFor('2026-08-03'))).to.deep.equal(stamps[2]);
+    });
+
+    it('does not let later activity leak into an earlier date', () => {
+      expect(lastActivityAt(stamps, asOf('2026-06-01'), windowFor('2026-06-01'))).to.deep.equal(stamps[1]);
+    });
+
+    it('ignores activity older than the twelve month window', () => {
+      const old = [new Date('2024-01-01T00:00:00Z')];
+      expect(lastActivityAt(old, asOf('2026-08-03'), windowFor('2026-08-03'))).to.equal(undefined);
+    });
+
+    it('counts a transfer landing exactly on either boundary', () => {
+      const onAsOf = [asOf('2026-08-03')];
+      expect(lastActivityAt(onAsOf, asOf('2026-08-03'), windowFor('2026-08-03'))).to.deep.equal(onAsOf[0]);
+      const onStart = [windowFor('2026-08-03')];
+      expect(lastActivityAt(onStart, asOf('2026-08-03'), windowFor('2026-08-03'))).to.deep.equal(onStart[0]);
+    });
+
+    it('is undefined for a wallet with no transfers at all', () => {
+      expect(lastActivityAt([], asOf('2026-08-03'), windowFor('2026-08-03'))).to.equal(undefined);
+    });
+  });
+
+  describe('fetchAddressActivityDates', () => {
+    const makeSvc = ({ apiKey }: { apiKey?: string } = { apiKey: 'key' }) =>
+      backfiller({
+        configService: {
+          get: () => ({ externalProviders: apiKey ? { moralis: { apiKey } } : {} }),
+          for: () => ({}),
+          isDisabled: () => false
+        },
+        cspProvider: { get: () => ({ getChainId: async () => 1 }) }
+      } as any);
+
+    const call = (instance: any) =>
+      instance.fetchAddressActivityDates({
+        chain: 'ETH',
+        network: 'mainnet',
+        address: '0xabc',
+        from: new Date('2025-08-03T00:00:00Z'),
+        to: new Date('2026-08-03T00:00:00Z')
+      });
+
+    it('asks for one bounded, spam-excluded page of history', async () => {
+      const get = sandbox.stub(axios, 'get').resolves({ data: { result: [] } });
+      await call(makeSvc());
+      const { params } = get.firstCall.args[1] as any;
+      expect(params.from_date).to.equal('2025-08-03T00:00:00.000Z');
+      expect(params.to_date).to.equal('2026-08-03T00:00:00.000Z');
+      expect(params.exclude_spam).to.equal(true);
+      expect(params.limit).to.be.greaterThan(0);
+      expect((get.firstCall.args[1] as any).timeout).to.equal(30000);
+    });
+
+    it('follows the cursor until the history runs out', async () => {
+      const get = sandbox.stub(axios, 'get');
+      get.onCall(0).resolves({ data: { result: [{ block_timestamp: '2026-01-15T00:00:00Z' }], cursor: 'next' } });
+      get.onCall(1).resolves({ data: { result: [{ block_timestamp: '2026-05-20T00:00:00Z' }] } });
+      const dates = await call(makeSvc());
+      expect(get.callCount).to.equal(2);
+      expect((get.secondCall.args[1] as any).params.cursor).to.equal('next');
+      expect(dates).to.deep.equal([new Date('2026-01-15T00:00:00Z'), new Date('2026-05-20T00:00:00Z')]);
+    });
+
+    it('stops at the page cap rather than paging forever', async () => {
+      const get = sandbox
+        .stub(axios, 'get')
+        .resolves({ data: { result: [{ block_timestamp: '2026-01-15T00:00:00Z' }], cursor: 'always' } });
+      const warn = sandbox.stub(logger, 'warn');
+      await call(makeSvc());
+      expect(get.callCount).to.equal(MAX_HISTORY_PAGES);
+      expect(warn.called).to.equal(true); // truncation is a fidelity loss, so it is not silent
+    });
+
+    it('drops spam rows the provider still returned', async () => {
+      sandbox.stub(axios, 'get').resolves({
+        data: {
+          result: [
+            { block_timestamp: '2026-05-20T00:00:00Z', possible_spam: true },
+            { block_timestamp: '2026-01-15T00:00:00Z', possible_spam: false }
+          ]
+        }
+      });
+      expect(await call(makeSvc())).to.deep.equal([new Date('2026-01-15T00:00:00Z')]);
+    });
+
+    it('returns the timestamps oldest first', async () => {
+      sandbox.stub(axios, 'get').resolves({
+        data: {
+          result: [{ block_timestamp: '2026-05-20T00:00:00Z' }, { block_timestamp: '2026-01-15T00:00:00Z' }]
+        }
+      });
+      expect(await call(makeSvc())).to.deep.equal([
+        new Date('2026-01-15T00:00:00Z'),
+        new Date('2026-05-20T00:00:00Z')
+      ]);
+    });
+
+    it('refuses to run without an api key instead of reporting no activity', async () => {
+      const get = sandbox.stub(axios, 'get');
+      let error: any;
+      await call(makeSvc({})).catch((e: any) => (error = e));
+      expect(error).to.be.an('error');
+      expect(get.called).to.equal(false);
+    });
+
+    it('retries a rate-limited page', async () => {
+      const instance = makeSvc();
+      const retry = sandbox.spy(instance.svc, 'withRateLimitRetry');
+      sandbox.stub(axios, 'get').resolves({ data: { result: [] } });
+      await call(instance);
+      expect(retry.called).to.equal(true);
+    });
+  });
+
+  describe('backfillEvmChain', () => {
+    const NOW = new Date('2026-08-31T00:00:00Z');
+    const walletCreatedAt = (iso: string) => ({ _id: ObjectID.createFromTime(new Date(iso).getTime() / 1000) });
+
+    const makeSvc = (over: any = {}) => {
+      const wallets = over.wallets ?? [walletCreatedAt('2025-01-01T00:00:00Z')];
+      const waitFn = sandbox.stub().resolves();
+      const instance = backfiller({
+        walletModel: { collection: { find: () => cursorOf(wallets) } },
+        walletAddressModel: { collection: { find: () => cursorOf(over.addresses ?? [{ address: '0xabc' }]) } },
+        walletStatsModel: { collection: {}, newSnapshot: (p: any) => WalletStatsStorage.newSnapshot(p) },
+        walletStatsWalletModel: {
+          collection: {},
+          activityWindow: (d: any, asOf: any) => WalletStatsWalletStorage.activityWindow(d, asOf)
+        },
+        configService: { for: () => over.serviceConfig ?? {}, isDisabled: () => false },
+        nowFn: () => NOW.getTime(),
+        waitFn
+      } as any);
+      const exists = sandbox.stub(instance, 'snapshotExists').resolves(false);
+      const fetch = sandbox
+        .stub(instance, 'fetchAddressActivityDates')
+        .resolves(over.stamps ?? [new Date('2026-07-30T00:00:00Z')]);
+      const persist = sandbox.stub(instance, 'persistBackfill').resolves();
+      sandbox.stub(instance.svc, 'detectDups').resolves(new Set());
+      return { instance, exists, fetch, persist, waitFn };
+    };
+
+    const run = (instance: any, dates: string[], opts: any = {}) =>
+      instance.backfillEvmChain({ chain: 'ETH', network: 'mainnet', dates, ...opts });
+
+    it('reads each address history once for the whole range', async () => {
+      const { instance, fetch } = makeSvc();
+      await run(instance, ['2026-08-03', '2026-08-10', '2026-08-17']);
+      expect(fetch.callCount).to.equal(1);
+      const { from, to } = fetch.firstCall.args[0];
+      // twelve months before the oldest date, through the newest
+      expect(from).to.deep.equal(new Date('2025-08-03T00:00:00Z'));
+      expect(to).to.deep.equal(new Date('2026-08-17T00:00:00Z'));
+    });
+
+    it('derives every date from that one pass', async () => {
+      const { instance, persist } = makeSvc({ stamps: [new Date('2026-07-30T00:00:00Z')] });
+      await run(instance, ['2026-07-27', '2026-08-03']);
+      const dates = persist.getCalls().map(c => c.args[0].snapshot.date);
+      expect(dates).to.deep.equal(['2026-07-27', '2026-08-03']);
+      // The transfer is after the 27th, so only the later snapshot counts it active.
+      const [earlier, later] = persist.getCalls().map(c => c.args[0].walletFacts[0].lastActivityDate);
+      expect(earlier).to.equal(undefined);
+      expect(later).to.deep.equal(new Date('2026-07-30T00:00:00Z'));
+    });
+
+    it('skips a date that already has a snapshot', async () => {
+      const { instance, exists, persist } = makeSvc();
+      exists.withArgs(sinon.match({ date: '2026-08-03' })).resolves(true);
+      const summary = await run(instance, ['2026-08-03', '2026-08-10']);
+      expect(persist.getCalls().map(c => c.args[0].snapshot.date)).to.deep.equal(['2026-08-10']);
+      expect(summary.skipped).to.equal(1);
+    });
+
+    it('touches no provider at all when every date is already there', async () => {
+      const { instance, exists, fetch } = makeSvc();
+      exists.resolves(true);
+      const summary = await run(instance, ['2026-08-03', '2026-08-10']);
+      expect(fetch.called).to.equal(false);
+      expect(summary).to.deep.equal({ written: 0, skipped: 2, errored: 0 });
+    });
+
+    it('marks the snapshot partial and leaves balances off the facts', async () => {
+      const { instance, persist } = makeSvc();
+      await run(instance, ['2026-08-03']);
+      const { snapshot, walletFacts, partial } = persist.firstCall.args[0];
+      expect(partial).to.deep.equal(['balances']);
+      expect(snapshot.totalBalance).to.equal('0');
+      // Absent, not '0' — a consumer must be able to tell unknown from empty.
+      expect('balance' in walletFacts[0]).to.equal(false);
+      expect('nonce' in walletFacts[0]).to.equal(false);
+    });
+
+    it('reads balances per date when asked, and then is not partial', async () => {
+      const { instance, persist } = makeSvc();
+      const getBalanceAt = sandbox.stub().resolves('4200');
+      await run(instance, ['2026-08-03', '2026-08-10'], { evmBalances: true, getBalanceAt });
+      expect(getBalanceAt.callCount).to.equal(2); // one wallet, two dates
+      expect(getBalanceAt.firstCall.args[0].date).to.equal('2026-08-03');
+      const { snapshot, walletFacts, partial } = persist.firstCall.args[0];
+      expect(partial).to.equal(undefined);
+      expect(snapshot.totalBalance).to.equal('4200');
+      expect(walletFacts[0].balance).to.equal('4200');
+    });
+
+    it('counts only the wallets that existed on each date', async () => {
+      const { instance, persist } = makeSvc({
+        wallets: [walletCreatedAt('2025-01-01T00:00:00Z'), walletCreatedAt('2026-08-20T00:00:00Z')]
+      });
+      await run(instance, ['2026-08-03']);
+      expect(persist.firstCall.args[0].snapshot.walletCntTotal).to.equal('1');
+    });
+
+    it('carries on when one wallet history fails', async () => {
+      const { instance, fetch, persist } = makeSvc({
+        wallets: [walletCreatedAt('2025-01-01T00:00:00Z'), walletCreatedAt('2025-02-01T00:00:00Z')]
+      });
+      fetch.onFirstCall().rejects(new Error('provider down'));
+      const summary = await run(instance, ['2026-08-03']);
+      expect(persist.calledOnce).to.equal(true);
+      expect(summary.errored).to.equal(1);
+      expect(persist.firstCall.args[0].snapshot.meta.erroredWalletCnt).to.equal(1);
+    });
+
+    it('stops cleanly when a shutdown is requested', async () => {
+      const { instance, persist } = makeSvc();
+      (instance.fetchAddressActivityDates as sinon.SinonStub).callsFake(async () => {
+        instance.stopping = true;
+        return [];
+      });
+      await run(instance, ['2026-08-03', '2026-08-10']);
+      expect(persist.called).to.equal(false); // a partial history must not become a snapshot
+    });
+
+    it('throttles between wallets', async () => {
+      const { instance, waitFn } = makeSvc({ serviceConfig: { sleepMs: 250, every: 1 } });
+      await run(instance, ['2026-08-03']);
+      expect(waitFn.called).to.equal(true);
+    });
+
+    it('does nothing when given no dates', async () => {
+      const { instance, fetch, persist } = makeSvc();
+      const summary = await run(instance, []);
+      expect(fetch.called).to.equal(false);
+      expect(persist.called).to.equal(false);
+      expect(summary).to.deep.equal({ written: 0, skipped: 0, errored: 0 });
     });
   });
 

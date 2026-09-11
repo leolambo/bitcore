@@ -672,6 +672,13 @@ export class WalletStatsService {
         .find({ chain, network, snapshotDate: watermark })
         .toArray();
       for (const fact of priorFacts) {
+        // A backfilled snapshot can sit at the watermark with no balance recorded.
+        // Change detection needs a number to compare against, so such a fact is no
+        // usable prior: the wallet falls back to its latest fact that has a balance,
+        // as one that errored last run does, rather than reading as "balance changed".
+        if (fact.balance === undefined) {
+          continue;
+        }
         priorByWallet.set(fact.wallet.toHexString(), {
           balance: fact.balance,
           nonce: fact.nonce,
@@ -686,7 +693,7 @@ export class WalletStatsService {
         const latest = await this.walletStatsWalletModel.collection
           .aggregate<{ _id: ObjectID; balance: string; nonce?: string; lastActivityDate?: Date }>(
             [
-              { $match: { chain, network, wallet: { $in: missing } } },
+              { $match: { chain, network, wallet: { $in: missing }, balance: { $exists: true } } },
               { $sort: { wallet: 1, snapshotDate: -1 } },
               {
                 $group: {

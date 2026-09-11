@@ -547,6 +547,8 @@ describe('WalletStats Service', function() {
       await svc.tick();
       const fallback = aggregate.getCalls().find(c => c.args[0].some((st: any) => st.$sort))!;
       expect(fallback.args[0][0].$match.wallet.$in.map((id: any) => id.toHexString())).to.deep.equal([oid.toHexString()]);
+      // a backfilled fact without a balance can't serve as a prior either
+      expect(fallback.args[0][0].$match.balance).to.deep.equal({ $exists: true });
       expect(collect.firstCall.args[0].prior).to.deep.equal({
         balance: '100',
         nonce: '5',
@@ -566,6 +568,29 @@ describe('WalletStats Service', function() {
       sandbox.stub(svc, 'collectEvmWalletFact').resolves({ balance: '1', nonce: '1' } as any);
       await svc.tick();
       expect(aggregate.getCalls().some(c => c.args[0].some((st: any) => st.$sort))).to.equal(false);
+    });
+
+    it('ignores a prior fact that has no balance to compare against', async () => {
+      // A backfilled EVM snapshot can sit at the watermark with balances unread.
+      // Treating that as a prior would read "balance changed" and date the wallet
+      // active today, so the wallet must re-derive instead.
+      const oid = new ObjectID();
+      const priorFind = sandbox
+        .stub()
+        .returns(cursor([{ wallet: oid, snapshotDate: '2026-07-27', lastActivityDate: new Date('2026-01-01T00:00:00Z') }]));
+      const csp = {
+        getBalanceForAddress: sandbox.stub().resolves({ balance: '0x0' }),
+        getAccountNonce: sandbox.stub().resolves(0),
+        getChainId: sandbox.stub().resolves(1)
+      };
+      const checkTokenActivity = sandbox.stub().resolves(null);
+      const { deps, bulkWrite } = makeDeps({
+        chain: 'ETH', wallets: [{ _id: oid }], watermarkRows: [{ date: '2026-07-27' }], priorFind, csp
+      });
+      const svc = new WalletStatsService({ ...deps, checkTokenActivity });
+      await svc.tick();
+      expect(checkTokenActivity.called).to.equal(true); // re-derived, not carried forward
+      expect(bulkWrite.firstCall.args[0][0].updateOne.update.$set.lastActivityDate).to.equal(undefined);
     });
 
     it('drops a re-entrant tick while one is running', async () => {
