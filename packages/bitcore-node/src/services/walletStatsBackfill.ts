@@ -1,10 +1,32 @@
+import axios from 'axios';
 import { ObjectID } from 'mongodb';
 import logger from '../logger';
 import { IWalletStats } from '../models/walletStats';
 import { IWalletStatsWallet } from '../models/walletStatsWallet';
 import { SpentHeightIndicators } from '../types/Coin';
 import { isYyyyMmDd } from '../utils/date';
-import { WalletStats, WalletStatsService } from './walletStats';
+import { MoralisTransfer, WalletStats, WalletStatsService } from './walletStats';
+
+/** Rows per history page. */
+export const HISTORY_PAGE_LIMIT = 100;
+/** Hard stop on paging, so one busy address cannot stall a whole backfill. */
+export const MAX_HISTORY_PAGES = 50;
+
+/**
+ * The wallet's most recent transfer at or before `asOf`, ignoring anything older
+ * than `windowStart`. Both bounds are inclusive. Timestamps arrive oldest first,
+ * so this walks back from the end.
+ */
+export function lastActivityAt(timestamps: Date[], asOf: Date, windowStart: Date): Date | undefined {
+  for (let i = timestamps.length - 1; i >= 0; i--) {
+    const stamp = timestamps[i];
+    if (stamp > asOf) {
+      continue;
+    }
+    return stamp >= windowStart ? stamp : undefined;
+  }
+  return undefined;
+}
 
 /**
  * Reconstructs historical wallet-stats snapshots. Kept apart from the collector
@@ -209,6 +231,226 @@ export class WalletStatsBackfiller {
       .limit(1)
       .toArray();
     return block ? block.height : null;
+  }
+
+  // Every transfer timestamp for one address in [from, to], oldest first. This is
+  // the single pass the whole EVM backfill rests on: one bounded walk of history
+  // per address, from which every date's activity is then derived locally. Paging
+  // is capped and each page is spam-filtered.
+  //
+  // A missing api key throws rather than returning nothing. An empty result would
+  // be indistinguishable from "this wallet was never active", and that would be
+  // written into history as fact.
+  async fetchAddressActivityDates(params: {
+    chain: string;
+    network: string;
+    address: string;
+    from: Date;
+    to: Date;
+  }): Promise<Date[]> {
+    const { chain, network, address, from, to } = params;
+    const apiKey = this.service.configService.get()?.externalProviders?.moralis?.apiKey;
+    if (!apiKey) {
+      throw new Error('Wallet Stats backfill needs externalProviders.moralis.apiKey to read EVM history');
+    }
+    const csp: any = this.service.cspProvider.get({ chain, network });
+    const chainId = await csp.getChainId({ network });
+    const { formatMoralisChainId } = await import('../providers/chain-state/external/adapters/moralis-utils');
+    const moralisChain = formatMoralisChainId(chainId);
+
+    const dates: Date[] = [];
+    let cursor: string | undefined;
+    let page = 0;
+    do {
+      const { data } = await this.service.withRateLimitRetry(() =>
+        axios.get<{ result?: MoralisTransfer[]; cursor?: string }>(
+          `https://deep-index.moralis.io/api/v2.2/${address}/erc20/transfers`,
+          {
+            params: {
+              chain: moralisChain,
+              from_date: from.toISOString(),
+              to_date: to.toISOString(),
+              order: 'ASC',
+              limit: HISTORY_PAGE_LIMIT,
+              exclude_spam: true,
+              ...(cursor ? { cursor } : {})
+            },
+            headers: { 'X-API-Key': apiKey },
+            timeout: 30000
+          }
+        )
+      );
+      for (const row of data?.result || []) {
+        if (!row.possible_spam && row.block_timestamp) {
+          dates.push(new Date(row.block_timestamp));
+        }
+      }
+      cursor = data?.cursor;
+      page++;
+      if (cursor && page >= MAX_HISTORY_PAGES) {
+        // Truncated history dates a wallet earlier than the truth, so say so.
+        logger.warn(
+          `Wallet Stats backfill: history for ${address} on ${chain}:${network} hit the ${MAX_HISTORY_PAGES} page cap; activity may be understated`
+        );
+        break;
+      }
+    } while (cursor);
+
+    return dates.sort((a, b) => a.getTime() - b.getTime());
+  }
+
+  // Reconstruct an EVM chain's snapshots. Activity comes from ONE bounded history
+  // read per address covering the whole range, from which each date's last-activity
+  // is derived locally — per-date provider calls would multiply cost by the number
+  // of weeks being rebuilt.
+  //
+  // Balances are the expensive half: a past balance needs archive-node reads per
+  // wallet per date. They are off unless asked for, and a snapshot written without
+  // them is marked partial rather than being allowed to read as a real zero.
+  async backfillEvmChain(params: {
+    chain: string;
+    network: string;
+    dates: string[];
+    evmBalances?: boolean;
+    getBalanceAt?: (params: { chain: string; network: string; address: string; date: string }) => Promise<string>;
+  }): Promise<{ written: number; skipped: number; errored: number }> {
+    const { chain, network, evmBalances, getBalanceAt } = params;
+    const summary = { written: 0, skipped: 0, errored: 0 };
+    const sorted = [...params.dates].sort();
+    if (!sorted.length) {
+      return summary;
+    }
+    if (evmBalances && !getBalanceAt) {
+      throw new Error('Wallet Stats backfill: --evm-balances needs a balance reader');
+    }
+
+    const pending: string[] = [];
+    for (const date of sorted) {
+      if (await this.snapshotExists({ chain, network, date })) {
+        summary.skipped++;
+      } else {
+        pending.push(date);
+      }
+    }
+    if (!pending.length) {
+      return summary; // nothing to rebuild, so nothing is worth asking a provider for
+    }
+
+    const allWallets = (await this.service.walletModel.collection.find({ chain, network }).toArray()) as Array<{
+      _id: ObjectID;
+    }>;
+    const dups = await this.service.detectDups({ chain, network, wallets: allWallets });
+
+    const from = new Date(`${pending[0]}T00:00:00Z`);
+    from.setUTCFullYear(from.getUTCFullYear() - 1);
+    const to = new Date(`${pending[pending.length - 1]}T00:00:00Z`);
+
+    const sleepMs = this.config.sleepMs ?? 50;
+    const every = this.config.every ?? 10;
+    const stampsByWallet = new Map<string, Date[]>();
+    const addressesByWallet = new Map<string, string[]>();
+    let erroredWalletCnt = 0;
+    let processed = 0;
+
+    for (const wallet of allWallets) {
+      if (this.stopping) {
+        // A half-read history would understate activity, and that would be written
+        // into the record as fact. Abandon the run instead.
+        return summary;
+      }
+      const id = wallet._id.toHexString();
+      try {
+        const addresses = (
+          await this.service.walletAddressModel.collection
+            .find({ chain, network, wallet: wallet._id })
+            .project({ address: 1 })
+            .toArray()
+        ).map(a => a.address);
+        addressesByWallet.set(id, addresses);
+        const stamps: Date[] = [];
+        for (const address of addresses) {
+          stamps.push(...(await this.fetchAddressActivityDates({ chain, network, address, from, to })));
+        }
+        stampsByWallet.set(id, stamps.sort((a, b) => a.getTime() - b.getTime()));
+      } catch (err: any) {
+        erroredWalletCnt++;
+        logger.error(
+          `Wallet Stats backfill: history failed for wallet ${id} on ${chain}:${network}: ${err.stack || err.message || err}`
+        );
+      }
+      if (++processed % every === 0) {
+        await this.service.waitFn(sleepMs);
+      }
+    }
+
+    for (const date of pending) {
+      if (this.stopping) {
+        break;
+      }
+      try {
+        const asOf = new Date(`${date}T00:00:00Z`);
+        const windowStart = new Date(asOf.getTime());
+        windowStart.setUTCFullYear(windowStart.getUTCFullYear() - 1);
+        const wallets = allWallets.filter(wallet => wallet._id.getTimestamp() < asOf);
+
+        const activity = new Map<string, Date>();
+        const balances = new Map<string, bigint>();
+        for (const wallet of wallets) {
+          const id = wallet._id.toHexString();
+          const stamps = stampsByWallet.get(id);
+          if (!stamps) {
+            continue; // its history failed to read; it gets no activity date
+          }
+          const when = lastActivityAt(stamps, asOf, windowStart);
+          if (when) {
+            activity.set(id, when);
+          }
+          if (evmBalances) {
+            let balance = 0n;
+            for (const address of addressesByWallet.get(id) || []) {
+              balance += BigInt(await getBalanceAt!({ chain, network, address, date }));
+            }
+            balances.set(id, balance);
+            await this.service.waitFn(sleepMs);
+          }
+        }
+
+        const { snapshot, walletFacts } = this.service.buildSnapshot({
+          chain,
+          network,
+          date,
+          wallets,
+          balances,
+          activity,
+          dups
+        });
+        if (!evmBalances) {
+          // buildSnapshot fills a balance of '0' for every wallet, which here would
+          // claim an empty wallet rather than an unread one. Drop the field so the
+          // absence is visible, and mark the snapshot partial to match.
+          for (const fact of walletFacts) {
+            delete fact.balance;
+            delete fact.nonce;
+          }
+        }
+        snapshot.meta.erroredWalletCnt = erroredWalletCnt;
+        snapshot.meta.completedAt = new Date(this.service.nowFn());
+        await this.persistBackfill({
+          chain,
+          network,
+          snapshot,
+          walletFacts,
+          ...(evmBalances ? {} : { partial: ['balances'] })
+        });
+        summary.written++;
+      } catch (err: any) {
+        summary.errored++;
+        logger.error(`Wallet Stats backfill error for ${chain}:${network} ${date}: ${err.stack || err.message || err}`);
+      }
+      await this.service.waitFn(sleepMs);
+    }
+    summary.errored += erroredWalletCnt;
+    return summary;
   }
 
   // Reconstruct a UTXO chain's snapshots for the given dates, oldest first. Dates
