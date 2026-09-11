@@ -660,6 +660,13 @@ export class WalletStatsService {
         .find({ chain, network, snapshotDate: watermark })
         .toArray();
       for (const fact of priorFacts) {
+        // A backfilled snapshot can sit at the watermark with no balance recorded.
+        // Change detection needs a number to compare against, so such a fact is no
+        // usable prior: the wallet re-derives from scratch, exactly as one that
+        // errored last run does, rather than reading as "balance changed".
+        if (fact.balance === undefined) {
+          continue;
+        }
         priorByWallet.set(fact.wallet.toHexString(), {
           balance: fact.balance,
           nonce: fact.nonce,

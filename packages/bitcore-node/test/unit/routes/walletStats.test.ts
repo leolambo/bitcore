@@ -439,6 +439,16 @@ describe('WalletStats routes', function() {
       expect(res.body.totalBalance).to.equal('5');
     });
 
+    it('counts a wallet from a partial snapshot, with nothing added to the total', async () => {
+      // Backfilled EVM dates carry no balances. Those wallets still existed, so they
+      // count; what they held is unknown, so they contribute nothing to the sum.
+      stubFactsCollection([{ snapshotDate: '2026-08-03' }], [{ balance: '100' }, {}, {}]);
+      const res = makeRes();
+      await getCohorts({ query: { chain: 'ETH', network: 'mainnet' } } as any, res);
+      expect(res.body.walletCnt).to.equal(3);
+      expect(res.body.totalBalance).to.equal('100');
+    });
+
     it('uses the requested date instead of the latest, and echoes the filters', async () => {
       const { collection } = stubFactsCollection([], [{ balance: '1' }]);
       const res = makeRes();
@@ -588,6 +598,20 @@ describe('WalletStats routes', function() {
       );
       expect(res.body.buckets).to.deep.equal({ '50000': 1 });
       expect(cursor.toArray.callCount).to.equal(1);
+    });
+
+    it('leaves wallets with no known balance out of the buckets', async () => {
+      // Unlike cohorts, a bucket is a claim about how much a wallet holds. A wallet
+      // whose balance was never read cannot be placed in one, so it is left out
+      // rather than counted as dust.
+      // One whole ETH at $100k sits above the threshold; the other two are unknown.
+      stubFactsCollection([{ snapshotDate: '2026-08-03' }], [{ balance: '1000000000000000000' }, {}, {}]);
+      const res = makeRes();
+      await getBuckets(
+        { query: { chain: 'ETH', network: 'mainnet', thresholds: '50000', rate: '100000' } } as any,
+        res
+      );
+      expect(res.body.buckets).to.deep.equal({ '50000': 1 });
     });
 
     it('keys the cache on the resolved date, not the absent date param', async () => {

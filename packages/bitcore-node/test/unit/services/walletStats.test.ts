@@ -483,6 +483,29 @@ describe('WalletStats Service', function() {
       expect(updateOne.calledOnce).to.equal(true);
     });
 
+    it('ignores a prior fact that has no balance to compare against', async () => {
+      // A backfilled EVM snapshot can sit at the watermark with balances unread.
+      // Treating that as a prior would read "balance changed" and date the wallet
+      // active today, so the wallet must re-derive instead.
+      const oid = new ObjectID();
+      const priorFind = sandbox
+        .stub()
+        .returns(cursor([{ wallet: oid, snapshotDate: '2026-07-27', lastActivityDate: new Date('2026-01-01T00:00:00Z') }]));
+      const csp = {
+        getBalanceForAddress: sandbox.stub().resolves({ balance: '0x0' }),
+        getAccountNonce: sandbox.stub().resolves(0),
+        getChainId: sandbox.stub().resolves(1)
+      };
+      const checkTokenActivity = sandbox.stub().resolves(null);
+      const { deps, bulkWrite } = makeDeps({
+        chain: 'ETH', wallets: [{ _id: oid }], watermarkRows: [{ date: '2026-07-27' }], priorFind, csp
+      });
+      const svc = new WalletStatsService({ ...deps, checkTokenActivity });
+      await svc.tick();
+      expect(checkTokenActivity.called).to.equal(true); // re-derived, not carried forward
+      expect(bulkWrite.firstCall.args[0][0].updateOne.update.$set.lastActivityDate).to.equal(undefined);
+    });
+
     it('drops a re-entrant tick while one is running', async () => {
       const chainNetworks = sandbox.stub().returns([]);
       const { deps } = makeDeps({ chainNetworks });

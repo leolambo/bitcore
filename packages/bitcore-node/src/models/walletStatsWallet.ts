@@ -11,7 +11,7 @@ export interface IWalletStatsWallet {
   network: string;
   snapshotDate: string; // YYYY-MM-DD, matches walletstats.date
   createdDate: Date; // from wallet _id timestamp
-  balance: string; // native units, BigInt-as-string
+  balance?: string; // native units, BigInt-as-string; absent when it could not be read
   nonce?: string; // EVM only
   lastActivityDate?: Date; // best-known most recent activity
   isDup: boolean;
