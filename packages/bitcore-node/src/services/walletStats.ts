@@ -25,6 +25,17 @@ const args = parseArgv([], [
 ]);
 
 const ONE_MIN = 1000 * 60;
+
+export interface MoralisTransfer {
+  block_timestamp?: string;
+  possible_spam?: boolean;
+}
+
+// Spam airdrops make a dormant wallet look active. exclude_spam asks the provider to
+// leave them out, and rows are filtered again here because we cannot verify the
+// provider honours the flag on this endpoint. That second filter is why the probe
+// can no longer ask for a single row: one spam transfer would fill the only slot.
+export const SPAM_SAFE_PROBE_LIMIT = 25;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export class WalletStatsService {
@@ -758,17 +769,23 @@ export class WalletStatsService {
       const { formatMoralisChainId } = await import('../providers/chain-state/external/adapters/moralis-utils');
       const moralisChain = formatMoralisChainId(chainId);
       for (const address of addresses) {
-        const { data } = await axios.get<{ result?: Array<{ block_timestamp?: string }> }>(
+        const { data } = await axios.get<{ result?: MoralisTransfer[] }>(
           `https://deep-index.moralis.io/api/v2.2/${address}/erc20/transfers`,
           {
-            params: { chain: moralisChain, from_date: since.toISOString(), order: 'DESC', limit: 1 },
+            params: {
+              chain: moralisChain,
+              from_date: since.toISOString(),
+              order: 'DESC',
+              limit: SPAM_SAFE_PROBE_LIMIT,
+              exclude_spam: true
+            },
             headers: { 'X-API-Key': apiKey },
             timeout: 30000
           }
         );
-        const first = data?.result?.[0];
-        if (first?.block_timestamp) {
-          return new Date(first.block_timestamp);
+        const transfer = (data?.result || []).find(row => !row.possible_spam && row.block_timestamp);
+        if (transfer?.block_timestamp) {
+          return new Date(transfer.block_timestamp);
         }
       }
     } catch (err: any) {
