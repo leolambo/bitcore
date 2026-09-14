@@ -507,6 +507,18 @@ describe('WalletStats Backfiller', function() {
       expect(get.called).to.equal(false);
     });
 
+    it('passes its own stop signal into the retry rather than the collector one', async () => {
+      const instance = makeSvc();
+      const retry = sandbox.spy(instance.svc, 'withRateLimitRetry');
+      sandbox.stub(axios, 'get').resolves({ data: { result: [] } });
+      await call(instance);
+      const isStopped = retry.firstCall.args[1] as () => boolean;
+      expect(isStopped).to.be.a('function');
+      expect(isStopped()).to.equal(false);
+      instance.stop();
+      expect(isStopped()).to.equal(true);
+    });
+
     it('retries a rate-limited page', async () => {
       const instance = makeSvc();
       const retry = sandbox.spy(instance.svc, 'withRateLimitRetry');
@@ -581,7 +593,7 @@ describe('WalletStats Backfiller', function() {
       exists.resolves(true);
       const summary = await run(instance, ['2026-08-03', '2026-08-10']);
       expect(fetch.called).to.equal(false);
-      expect(summary).to.deep.equal({ written: 0, skipped: 2, errored: 0 });
+      expect(summary).to.deep.equal({ written: 0, skipped: 2, erroredDates: 0, erroredWallets: 0 });
     });
 
     it('marks the snapshot partial and leaves balances off the facts', async () => {
@@ -615,6 +627,28 @@ describe('WalletStats Backfiller', function() {
       expect(persist.firstCall.args[0].snapshot.walletCntTotal).to.equal('1');
     });
 
+    it('writes nothing when every wallet history failed', async () => {
+      // A missing or rejected api key fails every wallet identically. Writing the
+      // dates anyway records "nobody was ever active", and insert-if-absent means a
+      // corrected re-run skips those dates and the lie is permanent.
+      const { instance, fetch, persist } = makeSvc({
+        wallets: [walletCreatedAt('2025-01-01T00:00:00Z'), walletCreatedAt('2025-02-01T00:00:00Z')]
+      });
+      fetch.rejects(new Error('no api key'));
+      const summary = await run(instance, ['2026-08-03', '2026-08-10']);
+      expect(persist.called).to.equal(false);
+      expect(summary.aborted).to.equal(true);
+      expect(summary.written).to.equal(0);
+      expect(summary.erroredWallets).to.equal(2);
+    });
+
+    it('does not abort when there were no wallets to read', async () => {
+      const { instance, persist } = makeSvc({ wallets: [] });
+      const summary = await run(instance, ['2026-08-03']);
+      expect(summary.aborted).to.equal(undefined);
+      expect(persist.calledOnce).to.equal(true); // an empty chain is a real, zeroed snapshot
+    });
+
     it('carries on when one wallet history fails', async () => {
       const { instance, fetch, persist } = makeSvc({
         wallets: [walletCreatedAt('2025-01-01T00:00:00Z'), walletCreatedAt('2025-02-01T00:00:00Z')]
@@ -622,7 +656,9 @@ describe('WalletStats Backfiller', function() {
       fetch.onFirstCall().rejects(new Error('provider down'));
       const summary = await run(instance, ['2026-08-03']);
       expect(persist.calledOnce).to.equal(true);
-      expect(summary.errored).to.equal(1);
+      // Failed wallets and failed dates are different problems, counted separately.
+      expect(summary.erroredWallets).to.equal(1);
+      expect(summary.erroredDates).to.equal(0);
       expect(persist.firstCall.args[0].snapshot.meta.erroredWalletCnt).to.equal(1);
     });
 
@@ -647,7 +683,7 @@ describe('WalletStats Backfiller', function() {
       const summary = await run(instance, []);
       expect(fetch.called).to.equal(false);
       expect(persist.called).to.equal(false);
-      expect(summary).to.deep.equal({ written: 0, skipped: 0, errored: 0 });
+      expect(summary).to.deep.equal({ written: 0, skipped: 0, erroredDates: 0, erroredWallets: 0 });
     });
   });
 
@@ -698,7 +734,7 @@ describe('WalletStats Backfiller', function() {
       const summary = await run(service, ['2026-08-03', '2026-08-10']);
       expect(balances.getCalls().map(c => c.args[0].date)).to.deep.equal(['2026-08-10']);
       expect(persist.callCount).to.equal(1);
-      expect(summary).to.deep.equal({ written: 1, skipped: 1, errored: 0 });
+      expect(summary).to.deep.equal({ written: 1, skipped: 1, erroredDates: 0 });
     });
 
     it('counts only the wallets that existed on the date being reconstructed', async () => {
@@ -743,7 +779,7 @@ describe('WalletStats Backfiller', function() {
       balances.withArgs(sinon.match({ date: '2026-08-03' })).rejects(new Error('aggregation blew up'));
       const summary = await run(service, ['2026-08-03', '2026-08-10']);
       expect(persist.getCalls().map(c => c.args[0].snapshot.date)).to.deep.equal(['2026-08-10']);
-      expect(summary).to.deep.equal({ written: 1, skipped: 0, errored: 1 });
+      expect(summary).to.deep.equal({ written: 1, skipped: 0, erroredDates: 1 });
     });
 
     it('stops cleanly when a shutdown is requested mid-run', async () => {
@@ -768,7 +804,7 @@ describe('WalletStats Backfiller', function() {
       const summary = await run(service, []);
       expect(persist.called).to.equal(false);
       expect(dups.called).to.equal(false);
-      expect(summary).to.deep.equal({ written: 0, skipped: 0, errored: 0 });
+      expect(summary).to.deep.equal({ written: 0, skipped: 0, erroredDates: 0 });
     });
   });
 

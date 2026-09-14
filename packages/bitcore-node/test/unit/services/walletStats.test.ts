@@ -370,6 +370,51 @@ describe('WalletStats Service', function() {
     });
   });
 
+  describe('withRateLimitRetry stop signal', () => {
+    it('gives up mid-backoff when the caller says it is stopping', async () => {
+      // The backfiller has its own stopping flag; without a way to pass it, a
+      // backfill stuck in a rate-limit backoff would ignore its own stop().
+      let clock = 0;
+      const svc = new WalletStatsService({
+        configService: { for: () => ({ maxRetryMs: 500 }), isDisabled: () => false },
+        waitFn: async () => {
+          clock += 100;
+        },
+        nowFn: () => clock
+      } as any);
+      let calls = 0;
+      let callerStopping = false;
+      const fn = async () => {
+        calls++;
+        callerStopping = true; // the caller stops while we are backing off
+        throw new Error('Too Many Requests');
+      };
+      let error: any;
+      await svc.withRateLimitRetry(fn, () => callerStopping).catch((e: any) => (error = e));
+      expect(error).to.be.an('error');
+      expect(calls).to.equal(1); // no second attempt
+    });
+
+    it('still watches its own stopping flag when no signal is given', async () => {
+      let clock2 = 0;
+      const svc = new WalletStatsService({
+        configService: { for: () => ({ maxRetryMs: 500 }), isDisabled: () => false },
+        waitFn: async () => {
+          clock2 += 100;
+        },
+        nowFn: () => clock2
+      } as any);
+      let calls = 0;
+      const fn = async () => {
+        calls++;
+        svc.stopping = true;
+        throw new Error('Too Many Requests');
+      };
+      await svc.withRateLimitRetry(fn).catch(() => undefined);
+      expect(calls).to.equal(1);
+    });
+  });
+
   describe('withRateLimitRetry hardening', () => {
     it('gives up after the total-elapsed retry cap and throws the last error', async () => {
       const err = new Error('Too Many Requests');
@@ -504,6 +549,33 @@ describe('WalletStats Service', function() {
       await svc.tick();
       expect(checkTokenActivity.called).to.equal(true); // re-derived, not carried forward
       expect(bulkWrite.firstCall.args[0][0].updateOne.update.$set.lastActivityDate).to.equal(undefined);
+    });
+
+    it('ignores a prior fact that has a balance but no nonce', async () => {
+      // A --evm-balances backfill writes balance without nonce. The nonce comparison
+      // then reads ('0' !== '47') for any wallet that ever sent a transaction, and
+      // the wallet is stamped active on the day of this tick — false history that
+      // sits in the twelve month activity counters for a year.
+      const oid = new ObjectID();
+      const priorFind = sandbox.stub().returns(
+        cursor([
+          { wallet: oid, snapshotDate: '2026-07-27', balance: '5000', lastActivityDate: new Date('2026-01-01T00:00:00Z') }
+        ])
+      );
+      const csp = {
+        getBalanceForAddress: sandbox.stub().resolves({ balance: '0x1388' }), // 5000, unchanged
+        getAccountNonce: sandbox.stub().resolves(47),
+        getChainId: sandbox.stub().resolves(1)
+      };
+      const checkTokenActivity = sandbox.stub().resolves(null);
+      const { deps, bulkWrite } = makeDeps({
+        chain: 'ETH', wallets: [{ _id: oid }], watermarkRows: [{ date: '2026-07-27' }], priorFind, csp
+      });
+      const svc = new WalletStatsService({ ...deps, checkTokenActivity });
+      await svc.tick();
+      const written = bulkWrite.firstCall.args[0][0].updateOne.update.$set;
+      expect(written.lastActivityDate).to.not.deep.equal(new Date('2026-08-03T00:00:00Z'));
+      expect(checkTokenActivity.called).to.equal(true); // re-derived rather than guessed
     });
 
     it('drops a re-entrant tick while one is running', async () => {

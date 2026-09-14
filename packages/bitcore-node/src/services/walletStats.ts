@@ -352,22 +352,25 @@ export class WalletStatsService {
   // the tick — on expiry the last error is thrown so the caller counts it and
   // moves on. Stop is honored both before and after each sleep so shutdown waits
   // at most one backoff interval.
-  async withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
+  // `isStopped` lets a caller with its own lifecycle — the backfiller — abandon a
+  // backoff on ITS stop, not just the collector's. Defaults to this service's flag.
+  async withRateLimitRetry<T>(fn: () => Promise<T>, isStopped?: () => boolean): Promise<T> {
     let delay = 100;
     const cap = 60 * 1000;
     const maxRetryMs = this.serviceConfig.maxRetryMs ?? 10 * 60 * 1000;
     const start = this.nowFn();
+    const stopped = isStopped ?? (() => this.stopping);
     for (;;) {
       try {
         return await fn();
       } catch (err: any) {
         const message = err?.message || '';
         const is429 = message.includes('Too Many Requests') || err?.status === 429 || err?.statusCode === 429;
-        if (!is429 || this.stopping || this.nowFn() - start >= maxRetryMs) {
+        if (!is429 || stopped() || this.nowFn() - start >= maxRetryMs) {
           throw err;
         }
         await this.waitFn(delay);
-        if (this.stopping) {
+        if (stopped()) {
           throw err;
         }
         delay = Math.min(delay * 2, cap);
@@ -654,17 +657,20 @@ export class WalletStatsService {
     // at the watermark date, so no latest-per-wallet sort (the 100MB trap) is needed.
     // Trade-off: a wallet that errored last run has no fact at the watermark, so its
     // native-activity carry-forward is lost and it re-derives from scratch this run.
-    const priorByWallet = new Map<string, { balance: string; nonce?: string; lastActivityDate?: Date }>();
+    const priorByWallet = new Map<string, { balance: string; nonce: string; lastActivityDate?: Date }>();
     if (watermark) {
       const priorFacts = await this.walletStatsWalletModel.collection
         .find({ chain, network, snapshotDate: watermark })
         .toArray();
       for (const fact of priorFacts) {
-        // A backfilled snapshot can sit at the watermark with no balance recorded.
-        // Change detection needs a number to compare against, so such a fact is no
-        // usable prior: the wallet re-derives from scratch, exactly as one that
-        // errored last run does, rather than reading as "balance changed".
-        if (fact.balance === undefined) {
+        // Change detection compares BOTH balance and nonce, so a fact missing either
+        // is no usable prior. A backfilled snapshot has no nonce even when it has a
+        // balance, and comparing a real nonce against a missing one reads as "this
+        // wallet moved" for every wallet that ever sent a transaction — stamping it
+        // active on the day of this tick and holding that for a year in the twelve
+        // month counters. Such a wallet re-derives from scratch, exactly as one that
+        // errored last run does.
+        if (fact.balance === undefined || fact.nonce === undefined) {
           continue;
         }
         priorByWallet.set(fact.wallet.toHexString(), {
