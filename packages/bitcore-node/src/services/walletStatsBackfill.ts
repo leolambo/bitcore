@@ -7,6 +7,18 @@ import { SpentHeightIndicators } from '../types/Coin';
 import { isYyyyMmDd } from '../utils/date';
 import { MoralisTransfer, WalletStats, WalletStatsService } from './walletStats';
 
+export interface BackfillSummary {
+  written: number;
+  skipped: number;
+  erroredDates: number;
+}
+
+export interface EvmBackfillSummary extends BackfillSummary {
+  erroredWallets: number;
+  /** Set when the run wrote nothing because every wallet history failed. */
+  aborted?: true;
+}
+
 /** Rows per history page. */
 export const HISTORY_PAGE_LIMIT = 100;
 /** Hard stop on paging, so one busy address cannot stall a whole backfill. */
@@ -41,7 +53,8 @@ export class WalletStatsBackfiller {
 
   constructor(private service: WalletStatsService = WalletStats) {}
 
-  // The CLI stops the backfill without touching a running collector.
+  // The CLI stops the backfill without touching a running collector. One-shot: an
+  // instance that has been stopped stays stopped, so a resumed run needs a new one.
   stop() {
     this.stopping = true;
   }
@@ -315,13 +328,7 @@ export class WalletStatsBackfiller {
     dates: string[];
     evmBalances?: boolean;
     getBalanceAt?: (params: { chain: string; network: string; address: string; date: string }) => Promise<string>;
-  }): Promise<{
-    written: number;
-    skipped: number;
-    erroredDates: number;
-    erroredWallets: number;
-    aborted?: true;
-  }> {
+  }): Promise<EvmBackfillSummary> {
     const { chain, network, evmBalances, getBalanceAt } = params;
     const summary = { written: 0, skipped: 0, erroredDates: 0, erroredWallets: 0 };
     const sorted = [...params.dates].sort();
@@ -445,13 +452,18 @@ export class WalletStatsBackfiller {
           activity,
           dups
         });
-        if (!evmBalances) {
-          // buildSnapshot fills a balance of '0' for every wallet, which here would
-          // claim an empty wallet rather than an unread one. Drop the field so the
-          // absence is visible, and mark the snapshot partial to match.
-          for (const fact of walletFacts) {
+        // buildSnapshot fills a balance of '0' for every wallet it was not given one
+        // for, which here would claim an empty wallet rather than an unread one. Drop
+        // the field wherever the balance was not actually read: all of them when
+        // balances are off, and the ones whose history failed even when they are on.
+        // Snapshots insert once and are never updated, so a zero written here is
+        // permanent, and buckets would file a whale as dust.
+        let unread = 0;
+        for (const fact of walletFacts) {
+          if (!evmBalances || !stampsByWallet.has(fact.wallet.toHexString())) {
             delete fact.balance;
             delete fact.nonce;
+            unread++;
           }
         }
         snapshot.meta.erroredWalletCnt = erroredWalletCnt;
@@ -461,7 +473,9 @@ export class WalletStatsBackfiller {
           network,
           snapshot,
           walletFacts,
-          ...(evmBalances ? {} : { partial: ['balances'] })
+          // Any unread balance makes the snapshot's totals incomplete, whether that
+          // is every wallet or just the ones that failed.
+          ...(unread ? { partial: ['balances'] } : {})
         });
         summary.written++;
       } catch (err: any) {
@@ -480,7 +494,7 @@ export class WalletStatsBackfiller {
     chain: string;
     network: string;
     dates: string[];
-  }): Promise<{ written: number; skipped: number; erroredDates: number }> {
+  }): Promise<BackfillSummary> {
     const { chain, network } = params;
     const dates = [...params.dates].sort();
     const summary = { written: 0, skipped: 0, erroredDates: 0 };
