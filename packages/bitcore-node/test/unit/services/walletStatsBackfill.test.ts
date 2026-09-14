@@ -519,7 +519,7 @@ describe('WalletStats Backfiller', function() {
       expect(isStopped()).to.equal(true);
     });
 
-    it('retries a rate-limited page', async () => {
+    it('sends each page through the rate-limit wrapper', async () => {
       const instance = makeSvc();
       const retry = sandbox.spy(instance.svc, 'withRateLimitRetry');
       sandbox.stub(axios, 'get').resolves({ data: { result: [] } });
@@ -617,6 +617,25 @@ describe('WalletStats Backfiller', function() {
       expect(partial).to.equal(undefined);
       expect(snapshot.totalBalance).to.equal('4200');
       expect(walletFacts[0].balance).to.equal('4200');
+    });
+
+    it('does not invent a zero balance for a wallet whose history failed', async () => {
+      // With --evm-balances the balance is read per wallet per date, but a wallet
+      // whose history failed is skipped entirely, so buildSnapshot fills in '0'.
+      // Snapshots insert once and never update, so that zero would be permanent —
+      // and buckets would file a whale as dust.
+      const { instance, fetch, persist } = makeSvc({
+        wallets: [walletCreatedAt('2025-01-01T00:00:00Z'), walletCreatedAt('2025-02-01T00:00:00Z')]
+      });
+      fetch.onFirstCall().rejects(new Error('provider down'));
+      const getBalanceAt = sandbox.stub().resolves('4200');
+      await run(instance, ['2026-08-03'], { evmBalances: true, getBalanceAt });
+      const { walletFacts, partial } = persist.firstCall.args[0];
+      const failed = walletFacts.find((f: any) => !('balance' in f));
+      const read = walletFacts.find((f: any) => f.balance === '4200');
+      expect(failed, 'the failed wallet keeps no balance field').to.exist;
+      expect(read, 'the wallet that was read keeps its balance').to.exist;
+      expect(partial).to.deep.equal(['balances']); // the total is knowingly incomplete
     });
 
     it('counts only the wallets that existed on each date', async () => {
