@@ -262,23 +262,25 @@ export class WalletStatsBackfiller {
     let cursor: string | undefined;
     let page = 0;
     do {
-      const { data } = await this.service.withRateLimitRetry(() =>
-        axios.get<{ result?: MoralisTransfer[]; cursor?: string }>(
-          `https://deep-index.moralis.io/api/v2.2/${address}/erc20/transfers`,
-          {
-            params: {
-              chain: moralisChain,
-              from_date: from.toISOString(),
-              to_date: to.toISOString(),
-              order: 'ASC',
-              limit: HISTORY_PAGE_LIMIT,
-              exclude_spam: true,
-              ...(cursor ? { cursor } : {})
-            },
-            headers: { 'X-API-Key': apiKey },
-            timeout: 30000
-          }
-        )
+      const { data } = await this.service.withRateLimitRetry(
+        () =>
+          axios.get<{ result?: MoralisTransfer[]; cursor?: string }>(
+            `https://deep-index.moralis.io/api/v2.2/${address}/erc20/transfers`,
+            {
+              params: {
+                chain: moralisChain,
+                from_date: from.toISOString(),
+                to_date: to.toISOString(),
+                order: 'ASC',
+                limit: HISTORY_PAGE_LIMIT,
+                exclude_spam: true,
+                ...(cursor ? { cursor } : {})
+              },
+              headers: { 'X-API-Key': apiKey },
+              timeout: 30000
+            }
+          ),
+        () => this.stopping
       );
       for (const row of data?.result || []) {
         if (!row.possible_spam && row.block_timestamp) {
@@ -313,9 +315,15 @@ export class WalletStatsBackfiller {
     dates: string[];
     evmBalances?: boolean;
     getBalanceAt?: (params: { chain: string; network: string; address: string; date: string }) => Promise<string>;
-  }): Promise<{ written: number; skipped: number; errored: number }> {
+  }): Promise<{
+    written: number;
+    skipped: number;
+    erroredDates: number;
+    erroredWallets: number;
+    aborted?: true;
+  }> {
     const { chain, network, evmBalances, getBalanceAt } = params;
-    const summary = { written: 0, skipped: 0, errored: 0 };
+    const summary = { written: 0, skipped: 0, erroredDates: 0, erroredWallets: 0 };
     const sorted = [...params.dates].sort();
     if (!sorted.length) {
       return summary;
@@ -382,6 +390,19 @@ export class WalletStatsBackfiller {
         await this.service.waitFn(sleepMs);
       }
     }
+    summary.erroredWallets = erroredWalletCnt;
+
+    // Every wallet failing is a failure of the run, not of the wallets — a missing
+    // or rejected api key looks exactly like this. Writing the dates anyway would
+    // record "nobody was ever active", and because backfill only inserts where
+    // nothing exists, a corrected re-run would skip those dates and leave the false
+    // history in place for good.
+    if (allWallets.length && erroredWalletCnt === allWallets.length) {
+      logger.error(
+        `Wallet Stats backfill aborted for ${chain}:${network}: all ${allWallets.length} wallet histories failed; nothing written`
+      );
+      return { ...summary, aborted: true };
+    }
 
     for (const date of pending) {
       if (this.stopping) {
@@ -444,12 +465,11 @@ export class WalletStatsBackfiller {
         });
         summary.written++;
       } catch (err: any) {
-        summary.errored++;
+        summary.erroredDates++;
         logger.error(`Wallet Stats backfill error for ${chain}:${network} ${date}: ${err.stack || err.message || err}`);
       }
       await this.service.waitFn(sleepMs);
     }
-    summary.errored += erroredWalletCnt;
     return summary;
   }
 
@@ -460,10 +480,10 @@ export class WalletStatsBackfiller {
     chain: string;
     network: string;
     dates: string[];
-  }): Promise<{ written: number; skipped: number; errored: number }> {
+  }): Promise<{ written: number; skipped: number; erroredDates: number }> {
     const { chain, network } = params;
     const dates = [...params.dates].sort();
-    const summary = { written: 0, skipped: 0, errored: 0 };
+    const summary = { written: 0, skipped: 0, erroredDates: 0 };
     if (!dates.length) {
       return summary;
     }
@@ -509,7 +529,7 @@ export class WalletStatsBackfiller {
         await this.persistBackfill({ chain, network, snapshot, walletFacts });
         summary.written++;
       } catch (err: any) {
-        summary.errored++;
+        summary.erroredDates++;
         logger.error(`Wallet Stats backfill error for ${chain}:${network} ${date}: ${err.stack || err.message || err}`);
       }
       await this.service.waitFn(sleepMs);
