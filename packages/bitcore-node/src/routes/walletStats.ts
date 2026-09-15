@@ -89,7 +89,10 @@ export function transformSnapshot(snapshot: IWalletStats) {
       completedAt: meta.completedAt,
       erroredWalletCnt: meta.erroredWalletCnt,
       source: meta.source,
-      gaps: meta.gaps
+      gaps: meta.gaps,
+      // Which counters a backfilled snapshot could not reconstruct. Without it a
+      // partial week's zeroed balance reads as a real zero.
+      partial: meta.partial
     }
   };
 }

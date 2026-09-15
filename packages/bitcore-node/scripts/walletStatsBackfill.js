@@ -39,6 +39,19 @@ const from = valueOf('--from');
 const to = valueOf('--to');
 const dates = valueOf('--dates') ? valueOf('--dates').split(',').map(d => d.trim()).filter(Boolean) : undefined;
 const gaps = args.includes('--gaps');
+const intOf = flag => {
+  const raw = valueOf(flag);
+  if (raw === undefined) {
+    return undefined;
+  }
+  const value = parseInt(raw, 10);
+  if (!Number.isInteger(value) || value < 0) {
+    usage(`${flag} must be a non-negative integer`);
+  }
+  return value;
+};
+const sleepMs = intOf('--sleep');
+const every = intOf('--every');
 const evmBalances = args.includes('--evm-balances');
 const dry = args.includes('--dry');
 
@@ -111,8 +124,15 @@ Storage.start()
 
       console.log(`${c}:${n} backfilling ${planned.length} dates (${planned[0]} to ${planned[planned.length - 1]})...`);
       const summary = isUtxo
-        ? await WalletStatsBackfill.backfillUtxoChain({ chain: c, network: n, dates: planned })
-        : await WalletStatsBackfill.backfillEvmChain({ chain: c, network: n, dates: planned, evmBalances });
+        ? await WalletStatsBackfill.backfillUtxoChain({ chain: c, network: n, dates: planned, sleepMs })
+        : await WalletStatsBackfill.backfillEvmChain({
+          chain: c,
+          network: n,
+          dates: planned,
+          evmBalances,
+          sleepMs,
+          every
+        });
       report(chainNetwork, summary);
     }
     if (quit) {
