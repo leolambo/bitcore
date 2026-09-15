@@ -528,6 +528,27 @@ describe('WalletStats Backfiller', function() {
     });
   });
 
+  describe('defaultGetBalanceAt', () => {
+    it('asks the chain state provider for the balance as of that date', async () => {
+      const getBalanceForAddress = sandbox.stub().resolves({ balance: '0x1388' });
+      const instance = backfiller({
+        cspProvider: { get: () => ({ getBalanceForAddress }) },
+        configService: { for: () => ({}), isDisabled: () => false }
+      } as any);
+      const balance = await instance.defaultGetBalanceAt({
+        chain: 'ETH',
+        network: 'mainnet',
+        address: '0xabc',
+        date: '2026-08-03'
+      });
+      expect(balance).to.equal('5000'); // hex in, decimal string out
+      const { args } = getBalanceForAddress.firstCall.args[0];
+      // `time` is what routes the read to an archive node and a historical block.
+      expect(args.time).to.equal('2026-08-03T00:00:00.000Z');
+      expect(args.hex).to.equal('true');
+    });
+  });
+
   describe('backfillEvmChain', () => {
     const NOW = new Date('2026-08-31T00:00:00Z');
     const walletCreatedAt = (iso: string) => ({ _id: ObjectID.createFromTime(new Date(iso).getTime() / 1000) });
@@ -605,6 +626,14 @@ describe('WalletStats Backfiller', function() {
       // Absent, not '0' — a consumer must be able to tell unknown from empty.
       expect('balance' in walletFacts[0]).to.equal(false);
       expect('nonce' in walletFacts[0]).to.equal(false);
+    });
+
+    it('falls back to reading balances through the provider when none is injected', async () => {
+      const { instance, persist } = makeSvc();
+      const reader = sandbox.stub(instance, 'defaultGetBalanceAt').resolves('7');
+      await run(instance, ['2026-08-03'], { evmBalances: true });
+      expect(reader.calledOnce).to.equal(true);
+      expect(persist.firstCall.args[0].walletFacts[0].balance).to.equal('7');
     });
 
     it('reads balances per date when asked, and then is not partial', async () => {
@@ -703,6 +732,67 @@ describe('WalletStats Backfiller', function() {
       expect(fetch.called).to.equal(false);
       expect(persist.called).to.equal(false);
       expect(summary).to.deep.equal({ written: 0, skipped: 0, erroredDates: 0, erroredWallets: 0 });
+    });
+  });
+
+  describe('planDates', () => {
+    const withSnapshots = (rows: any[]) =>
+      backfiller({
+        walletStatsModel: { collection: { find: () => cursorOf(rows) } },
+        configService: { for: () => ({}), isDisabled: () => false }
+      } as any);
+
+    const plan = (instance: any, over: any = {}) =>
+      instance.planDates({ chain: 'BTC', network: 'mainnet', ...over });
+
+    it('takes an explicit list, sorted and deduplicated', async () => {
+      const dates = await plan(withSnapshots([]), { dates: ['2026-08-17', '2026-08-03', '2026-08-17'] });
+      expect(dates).to.deep.equal(['2026-08-03', '2026-08-17']);
+    });
+
+    it('refuses a mistyped explicit date rather than quietly dropping it', async () => {
+      let error: any;
+      await plan(withSnapshots([]), { dates: ['2026-08-03', '2026-8-3'] }).catch((e: any) => (error = e));
+      expect(error).to.be.an('error');
+      expect(error.message).to.include('2026-8-3');
+    });
+
+    it('fills the schedule days missing between the first and last snapshot', async () => {
+      const instance = withSnapshots([{ date: '2026-08-03' }, { date: '2026-08-24' }]);
+      expect(await plan(instance, { gaps: true })).to.deep.equal(['2026-08-10', '2026-08-17']);
+    });
+
+    it('includes gaps the collector recorded for itself', async () => {
+      const instance = withSnapshots([
+        { date: '2026-08-03' },
+        { date: '2026-08-24', meta: { gaps: ['2026-07-27'] } }
+      ]);
+      expect(await plan(instance, { gaps: true })).to.deep.equal(['2026-07-27', '2026-08-10', '2026-08-17']);
+    });
+
+    it('has nothing to fill when the series is unbroken', async () => {
+      const instance = withSnapshots([{ date: '2026-08-03' }, { date: '2026-08-10' }]);
+      expect(await plan(instance, { gaps: true })).to.deep.equal([]);
+    });
+
+    it('cannot look for gaps in a series that does not exist yet', async () => {
+      expect(await plan(withSnapshots([]), { gaps: true })).to.deep.equal([]);
+    });
+
+    it('walks an explicit range', async () => {
+      const dates = await plan(withSnapshots([]), { from: '2026-08-03', to: '2026-08-17' });
+      expect(dates).to.deep.equal(['2026-08-03', '2026-08-10', '2026-08-17']);
+    });
+
+    it('defaults to the twelve months before the earliest snapshot', async () => {
+      const instance = withSnapshots([{ date: '2026-08-03' }, { date: '2026-08-10' }]);
+      const dates = await plan(instance);
+      expect(dates[0]).to.equal('2025-08-04'); // first schedule day on or after the year mark
+      expect(dates[dates.length - 1]).to.equal('2026-08-03');
+    });
+
+    it('has no default range before any snapshot exists', async () => {
+      expect(await plan(withSnapshots([]))).to.deep.equal([]);
     });
   });
 
