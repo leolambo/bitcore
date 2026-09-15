@@ -413,6 +413,8 @@ export class WalletStatsBackfiller {
     network: string;
     dates: string[];
     evmBalances?: boolean;
+    sleepMs?: number;
+    every?: number;
     getBalanceAt?: (params: { chain: string; network: string; address: string; date: string }) => Promise<string>;
   }): Promise<EvmBackfillSummary> {
     const { chain, network, evmBalances, getBalanceAt } = params;
@@ -444,8 +446,8 @@ export class WalletStatsBackfiller {
     const to = new Date(`${pending[pending.length - 1]}T00:00:00Z`);
 
     const readBalanceAt = getBalanceAt ?? (p => this.defaultGetBalanceAt(p));
-    const sleepMs = this.config.sleepMs ?? 50;
-    const every = this.config.every ?? 10;
+    const sleepMs = params.sleepMs ?? this.config.sleepMs ?? 50;
+    const every = params.every ?? this.config.every ?? 10;
     const stampsByWallet = new Map<string, Date[]>();
     const addressesByWallet = new Map<string, string[]>();
     let erroredWalletCnt = 0;
@@ -542,6 +544,11 @@ export class WalletStatsBackfiller {
         // balances are off, and the ones whose history failed even when they are on.
         // Snapshots insert once and are never updated, so a zero written here is
         // permanent, and buckets would file a whale as dust.
+        //
+        // Do NOT be tempted to fill these in with '0' or a placeholder nonce: the
+        // collector's prior-fact guard (walletStats.ts, collectEvm) treats a fact
+        // missing either half as unusable precisely because a fabricated value would
+        // read as a balance or nonce that had changed.
         let unread = 0;
         for (const fact of walletFacts) {
           if (!evmBalances || !stampsByWallet.has(fact.wallet.toHexString())) {
@@ -578,6 +585,7 @@ export class WalletStatsBackfiller {
     chain: string;
     network: string;
     dates: string[];
+    sleepMs?: number;
   }): Promise<BackfillSummary> {
     const { chain, network } = params;
     const dates = [...params.dates].sort();
@@ -592,7 +600,7 @@ export class WalletStatsBackfiller {
     // Duplicate verdicts describe the wallets themselves, not any point in time, so
     // one pass covers every date in the range.
     const dups = await this.service.detectDups({ chain, network, wallets: allWallets });
-    const sleepMs = this.config.sleepMs ?? 50;
+    const sleepMs = params.sleepMs ?? this.config.sleepMs ?? 50;
 
     for (const date of dates) {
       if (this.stopping) {

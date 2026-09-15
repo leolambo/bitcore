@@ -168,8 +168,20 @@ describe('WalletStats routes', function() {
         completedAt: doc.meta.completedAt,
         erroredWalletCnt: 1,
         source: 'interval',
-        gaps: ['2026-07-27']
+        gaps: ['2026-07-27'],
+        partial: undefined
       });
+    });
+
+    it('passes through which counters a partial snapshot is missing', () => {
+      // Without this a backfilled EVM week, whose totalBalance is '0' because balances
+      // were never read, is indistinguishable from a week where everyone held nothing.
+      const partial: any = { ...doc, meta: { ...doc.meta, partial: ['balances'] } };
+      expect((transformSnapshot(partial) as any).meta.partial).to.deep.equal(['balances']);
+    });
+
+    it('leaves partial off a complete snapshot', () => {
+      expect((transformSnapshot(doc) as any).meta.partial).to.equal(undefined);
     });
 
     it('survives a snapshot that is still running', () => {

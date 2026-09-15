@@ -726,6 +726,16 @@ describe('WalletStats Backfiller', function() {
       expect(waitFn.called).to.equal(true);
     });
 
+    it('lets the caller override the configured throttle', async () => {
+      const { instance, waitFn } = makeSvc({
+        serviceConfig: { sleepMs: 250, every: 10 },
+        wallets: [walletCreatedAt('2025-01-01T00:00:00Z'), walletCreatedAt('2025-02-01T00:00:00Z')]
+      });
+      await run(instance, ['2026-08-03'], { sleepMs: 1000, every: 1 });
+      expect(waitFn.firstCall.args[0]).to.equal(1000);
+      expect(waitFn.callCount).to.be.greaterThan(1); // every: 1 pauses after each wallet
+    });
+
     it('does nothing when given no dates', async () => {
       const { instance, fetch, persist } = makeSvc();
       const summary = await run(instance, []);
@@ -906,6 +916,12 @@ describe('WalletStats Backfiller', function() {
       await run(service, ['2026-08-03', '2026-08-10']);
       expect(waitFn.called).to.equal(true);
       expect(waitFn.firstCall.args[0]).to.equal(250);
+    });
+
+    it('lets the caller override the configured throttle', async () => {
+      const { service, waitFn } = makeSvc({ serviceConfig: { sleepMs: 250 } });
+      await service.backfillUtxoChain({ chain: 'BTC', network: 'mainnet', dates: ['2026-08-03'], sleepMs: 1000 });
+      expect(waitFn.firstCall.args[0]).to.equal(1000);
     });
 
     it('does nothing at all when given no dates', async () => {
