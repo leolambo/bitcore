@@ -87,6 +87,67 @@ export class WalletStatsBackfiller {
     }
   }
 
+  // Work out which dates a run should cover, in the order of precedence the CLI
+  // offers them: an explicit list, then gap filling, then a range, then the default
+  // of the twelve months before the series starts. Dates that already have a
+  // snapshot are NOT filtered here — the run skips them as it goes, and --dry is
+  // more useful showing the whole intended range.
+  async planDates(params: {
+    chain: string;
+    network: string;
+    from?: string;
+    to?: string;
+    dates?: string[];
+    gaps?: boolean;
+  }): Promise<string[]> {
+    const { chain, network, from, to, dates, gaps } = params;
+
+    if (dates?.length) {
+      const bad = dates.find(date => !isYyyyMmDd(date));
+      if (bad) {
+        // A typo here would silently backfill the wrong week, so say so instead.
+        throw new Error(`Invalid backfill date ${bad}, expected YYYY-MM-DD`);
+      }
+      return [...new Set(dates)].sort();
+    }
+
+    if (gaps) {
+      const existing = (await this.service.walletStatsModel.collection
+        .find({ chain, network })
+        .project({ date: 1, 'meta.gaps': 1 })
+        .sort({ date: 1 })
+        .toArray()) as Array<{ date: string; meta?: { gaps?: string[] } }>;
+      if (!existing.length) {
+        return []; // no series yet, so nothing to call a gap
+      }
+      const have = new Set(existing.map(row => row.date));
+      const missing = this.backfillDates(existing[0].date, existing[existing.length - 1].date).filter(
+        date => !have.has(date)
+      );
+      // The collector records the dates it knew it skipped; those are gaps too, and
+      // they can predate the first surviving snapshot.
+      const recorded = existing.flatMap(row => row.meta?.gaps || []).filter(date => isYyyyMmDd(date) && !have.has(date));
+      return [...new Set([...missing, ...recorded])].sort();
+    }
+
+    if (from || to) {
+      return this.backfillDates(from || '', to || '');
+    }
+
+    const [earliest] = (await this.service.walletStatsModel.collection
+      .find({ chain, network })
+      .project({ date: 1 })
+      .sort({ date: 1 })
+      .limit(1)
+      .toArray()) as Array<{ date: string }>;
+    if (!earliest) {
+      return []; // nothing collected yet, so there is no anchor for a default range
+    }
+    const start = new Date(`${earliest.date}T00:00:00Z`);
+    start.setUTCFullYear(start.getUTCFullYear() - 1);
+    return this.backfillDates(start.toISOString().split('T')[0], earliest.date);
+  }
+
   // Point lookup on the unique {chain, network, date} index.
   async snapshotExists(params: { chain: string; network: string; date: string }): Promise<boolean> {
     const { chain, network, date } = params;
@@ -314,6 +375,31 @@ export class WalletStatsBackfiller {
     return dates.sort((a, b) => a.getTime() - b.getTime());
   }
 
+  // One address's balance as of a date. The chain state provider already knows how
+  // to do this: passing `time` routes the read to an archive node and resolves the
+  // block before that instant, which is the same cutoff the UTXO path uses. Hex is
+  // requested so large wei values survive the trip.
+  async defaultGetBalanceAt(params: {
+    chain: string;
+    network: string;
+    address: string;
+    date: string;
+  }): Promise<string> {
+    const { chain, network, address, date } = params;
+    const csp: any = this.service.cspProvider.get({ chain, network });
+    const { balance } = await this.service.withRateLimitRetry<{ balance: string }>(
+      () =>
+        csp.getBalanceForAddress({
+          chain,
+          network,
+          address,
+          args: { time: new Date(`${date}T00:00:00Z`).toISOString(), hex: 'true' }
+        }),
+      () => this.stopping
+    );
+    return BigInt(balance).toString();
+  }
+
   // Reconstruct an EVM chain's snapshots. Activity comes from ONE bounded history
   // read per address covering the whole range, from which each date's last-activity
   // is derived locally — per-date provider calls would multiply cost by the number
@@ -334,9 +420,6 @@ export class WalletStatsBackfiller {
     const sorted = [...params.dates].sort();
     if (!sorted.length) {
       return summary;
-    }
-    if (evmBalances && !getBalanceAt) {
-      throw new Error('Wallet Stats backfill: --evm-balances needs a balance reader');
     }
 
     const pending: string[] = [];
@@ -360,6 +443,7 @@ export class WalletStatsBackfiller {
     from.setUTCFullYear(from.getUTCFullYear() - 1);
     const to = new Date(`${pending[pending.length - 1]}T00:00:00Z`);
 
+    const readBalanceAt = getBalanceAt ?? (p => this.defaultGetBalanceAt(p));
     const sleepMs = this.config.sleepMs ?? 50;
     const every = this.config.every ?? 10;
     const stampsByWallet = new Map<string, Date[]>();
@@ -436,7 +520,7 @@ export class WalletStatsBackfiller {
           if (evmBalances) {
             let balance = 0n;
             for (const address of addressesByWallet.get(id) || []) {
-              balance += BigInt(await getBalanceAt!({ chain, network, address, date }));
+              balance += BigInt(await readBalanceAt({ chain, network, address, date }));
             }
             balances.set(id, balance);
             await this.service.waitFn(sleepMs);
