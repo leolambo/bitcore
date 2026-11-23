@@ -426,14 +426,14 @@ describe('WalletStats Backfiller', function() {
   });
 
   describe('fetchAddressActivityDates', () => {
-    const makeSvc = ({ apiKey }: { apiKey?: string } = { apiKey: 'key' }) =>
+    const makeSvc = ({ apiKey, nonce = 0 }: { apiKey?: string; nonce?: number } = { apiKey: 'key' }) =>
       backfiller({
         configService: {
           get: () => ({ externalProviders: apiKey ? { moralis: { apiKey } } : {} }),
           for: () => ({}),
           isDisabled: () => false
         },
-        cspProvider: { get: () => ({ getChainId: async () => 1 }) }
+        cspProvider: { get: () => ({ getChainId: async () => 1, getAccountNonce: async () => nonce }) }
       } as any);
 
     const call = (instance: any) =>
@@ -518,6 +518,30 @@ describe('WalletStats Backfiller', function() {
       expect(isStopped()).to.equal(false);
       instance.stop();
       expect(isStopped()).to.equal(true);
+    });
+
+    it('adds the native transactions an address sent, and ignores ones it received', async () => {
+      const get = sandbox.stub(axios, 'get');
+      get.onCall(0).resolves({ data: { result: [{ block_timestamp: '2026-03-01T00:00:00Z' }] } });
+      get.onCall(1).resolves({
+        data: {
+          result: [
+            { block_timestamp: '2026-01-15T00:00:00Z', from_address: '0xABC' },
+            { block_timestamp: '2026-05-20T00:00:00Z', from_address: '0xdust' }
+          ]
+        }
+      });
+      const dates = await call(makeSvc({ apiKey: 'key', nonce: 3 }));
+      expect(get.secondCall.args[0]).to.equal('https://deep-index.moralis.io/api/v2.2/0xabc');
+      expect((get.secondCall.args[1] as any).params.to_date).to.equal('2026-08-03T00:00:00.000Z');
+      expect(dates).to.deep.equal([new Date('2026-01-15T00:00:00Z'), new Date('2026-03-01T00:00:00Z')]);
+    });
+
+    it('skips native history for an address that has never sent anything', async () => {
+      const get = sandbox.stub(axios, 'get').resolves({ data: { result: [] } });
+      await call(makeSvc({ apiKey: 'key', nonce: 0 }));
+      expect(get.callCount).to.equal(1);
+      expect(get.firstCall.args[0]).to.include('/erc20/transfers');
     });
 
     it('sends each page through the rate-limit wrapper', async () => {

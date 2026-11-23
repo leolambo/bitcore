@@ -307,10 +307,15 @@ export class WalletStatsBackfiller {
     return block ? block.height : null;
   }
 
-  // Every transfer timestamp for one address in [from, to], oldest first. This is
-  // the single pass the whole EVM backfill rests on: one bounded walk of history
-  // per address, from which every date's activity is then derived locally. Paging
-  // is capped and each page is spam-filtered.
+  // Every activity timestamp for one address in [from, to], oldest first: its
+  // ERC-20 transfers, plus the native transactions it sent. This is the single
+  // pass the whole EVM backfill rests on: one bounded walk of history per address,
+  // from which every date's activity is then derived locally. Paging is capped and
+  // each page is filtered.
+  //
+  // Incoming native transactions are left out because anyone can send dust to an
+  // address. An address whose nonce is 0 has never sent anything, so its native
+  // history is not read at all.
   //
   // A missing api key throws rather than returning nothing. An empty result would
   // be indistinguishable from "this wallet was never active", and that would be
@@ -330,34 +335,62 @@ export class WalletStatsBackfiller {
     const csp: any = this.service.cspProvider.get({ chain, network });
     const chainId = await csp.getChainId({ network });
     const { formatMoralisChainId } = await import('../providers/chain-state/external/adapters/moralis-utils');
-    const moralisChain = formatMoralisChainId(chainId);
+    const walk = {
+      chain,
+      network,
+      address,
+      apiKey,
+      query: { chain: formatMoralisChainId(chainId), from_date: from.toISOString(), to_date: to.toISOString() }
+    };
 
+    const dates = await this.walkHistory({
+      ...walk,
+      path: `${address}/erc20/transfers`,
+      extraQuery: { exclude_spam: true },
+      keep: row => !row.possible_spam
+    });
+    const nonce = await this.service.withRateLimitRetry(() => csp.getAccountNonce(network, address), () => this.stopping);
+    if (Number(nonce) > 0) {
+      const sender = address.toLowerCase();
+      dates.push(
+        ...(await this.walkHistory({ ...walk, path: address, keep: row => row.from_address?.toLowerCase() === sender }))
+      );
+    }
+    return dates.sort((a, b) => a.getTime() - b.getTime());
+  }
+
+  private async walkHistory(params: {
+    chain: string;
+    network: string;
+    address: string;
+    apiKey: string;
+    path: string;
+    query: Record<string, unknown>;
+    extraQuery?: Record<string, unknown>;
+    keep: (row: MoralisTransfer) => boolean;
+  }): Promise<Date[]> {
+    const { chain, network, address, apiKey, path, query, extraQuery, keep } = params;
     const dates: Date[] = [];
     let cursor: string | undefined;
     let page = 0;
     do {
       const { data } = await this.service.withRateLimitRetry(
         () =>
-          axios.get<{ result?: MoralisTransfer[]; cursor?: string }>(
-            `https://deep-index.moralis.io/api/v2.2/${address}/erc20/transfers`,
-            {
-              params: {
-                chain: moralisChain,
-                from_date: from.toISOString(),
-                to_date: to.toISOString(),
-                order: 'ASC',
-                limit: HISTORY_PAGE_LIMIT,
-                exclude_spam: true,
-                ...(cursor ? { cursor } : {})
-              },
-              headers: { 'X-API-Key': apiKey },
-              timeout: 30000
-            }
-          ),
+          axios.get<{ result?: MoralisTransfer[]; cursor?: string }>(`https://deep-index.moralis.io/api/v2.2/${path}`, {
+            params: {
+              ...query,
+              order: 'ASC',
+              limit: HISTORY_PAGE_LIMIT,
+              ...extraQuery,
+              ...(cursor ? { cursor } : {})
+            },
+            headers: { 'X-API-Key': apiKey },
+            timeout: 30000
+          }),
         () => this.stopping
       );
       for (const row of data?.result || []) {
-        if (!row.possible_spam && row.block_timestamp) {
+        if (row.block_timestamp && keep(row)) {
           dates.push(new Date(row.block_timestamp));
         }
       }
@@ -371,8 +404,7 @@ export class WalletStatsBackfiller {
         break;
       }
     } while (cursor);
-
-    return dates.sort((a, b) => a.getTime() - b.getTime());
+    return dates;
   }
 
   // One address's balance as of a date. The chain state provider already knows how
